@@ -119,7 +119,34 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
                  box-shadow:none !important; }
 .hx-status { position:sticky; top:8px; z-index:20; background:#ffffff; }
 .q-tab { text-transform: none; }
+.q-uploader__subtitle { color: rgba(255,255,255,.92) !important; }
 button:focus-visible, .q-field:focus-within { outline: 2px solid #6366f1; outline-offset: 1px; }
+"""
+
+# Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
+# button and its hidden <input type=file> have no accessible names.  Patch them
+# as they appear (survives re-renders via MutationObserver).
+_QUASAR_A11Y_PATCH = """
+<script>
+(function () {
+  if (window.__hxBibA11y) return;
+  window.__hxBibA11y = true;
+  var fix = function () {
+    document.querySelectorAll('.q-uploader__header-content a.q-btn').forEach(function (b) {
+      if (!b.hasAttribute('aria-label'))
+        b.setAttribute('aria-label', '添加文件 / Add files');
+    });
+    document.querySelectorAll('input.q-uploader__input').forEach(function (i) {
+      if (!i.hasAttribute('aria-label'))
+        i.setAttribute('aria-label', '选择 BibTeX 文件 / Choose BibTeX file');
+    });
+  };
+  new MutationObserver(fix).observe(document.documentElement,
+                                    {subtree: true, childList: true});
+  document.addEventListener('DOMContentLoaded', fix);
+  fix();
+})();
+</script>
 """
 
 
@@ -419,8 +446,10 @@ def register_pages() -> None:
         ui.add_head_html(
             "<meta name='description' content='hx-bib — format, clean, normalize, "
             "validate and verify BibTeX bibliographies. BibTeX 整理、格式校验与多源引用核查工具。'>"
-            f"<style>{CSS}</style>"
+            f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}"
         )
+        # AA-compliant primary (NiceGUI's default #5898d4 fails contrast on white).
+        ui.colors(primary="#1d4ed8", secondary="#0f766e", accent="#6d28d9")
         state = _new_state()
 
         def _apply_lang_attr() -> None:
@@ -480,8 +509,9 @@ def register_pages() -> None:
                         ui.label(t(state["lang"], "subtitle")).classes("hx-tab-note text-sm")
                     with ui.row().classes("items-center gap-2"):
                         ui.button("中 / EN", on_click=toggle_lang).props(
-                            "flat dense aria-label='Switch language 切换语言'"
-                        ).style("color:#4338ca;font-weight:700")
+                            "flat dense no-caps "
+                            "aria-label='中 / EN — 切换语言 / Switch language'"
+                        ).style("color:#3730a3;font-weight:700")
 
             # ---------------- body ----------------
             @ui.refreshable
