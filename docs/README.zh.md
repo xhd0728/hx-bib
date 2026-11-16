@@ -20,7 +20,6 @@ hx-bib 是一个 BibTeX 整理工具箱：**格式化**、**清理**、**会议�
 - [修改预览：逐项对照 + 红绿 Diff](#修改预览逐项对照--红绿-diff)
 - [会议期刊分组规则](#会议期刊分组规则)
 - [引用核查的判定等级](#引用核查的判定等级)
-- [DeepSeek 搜索 / 抓取 MCP 工具](#deepseek-搜索--抓取-mcp-工具)
 - [开发与测试](#开发与测试)
 - [License](#license)
 
@@ -275,17 +274,6 @@ GUI 中可在“仅看改动”和“查看全部”之间切换（CLI 加 `--dr
 | `FAIL` | 疑似伪造（各可靠来源明确查无此文，或 DOI/arXiv id 不存在） |
 
 作者对照会把 bib 中的作者列表与来源记录逐名比对（容忍 `and others` 截断、姓名缩写差异），HTML 报告中以红色标出对不上的名字；带 `and others` 截断的作者列表会单独给出提示。
-
-## DeepSeek 搜索 / 抓取 MCP 工具
-
-`tools/deepseek-mcp/` 提供一个**零依赖**（仅标准库）的 MCP 服务器，把 DeepSeek 官方 Web API 包装成两个工具：
-
-| 工具 | 用途 |
-| --- | --- |
-| `deepseek_search` | 联网搜索，支持 `site:` / `-site:` / `"精确短语"`；返回标题、URL、摘要、站点、日期、权威度（−1…4）与相关性分（0…3） |
-| `deepseek_fetch` | 抓取任意网页并转为 Markdown（标题 + 正文） |
-
-Key 从环境变量 `DEEPSEEK_API_KEY` 或 `server.py` 同目录的 `api_key.txt`（已被 git 忽略）读取。Claude Code / Claude Desktop / 其他 stdio 客户端的注册模板（含本机 conda 环境 `bib` 的示例）与手动测试命令见 [`tools/deepseek-mcp/README.md`](../tools/deepseek-mcp/README.md)。
 
 ## 开发与测试
 

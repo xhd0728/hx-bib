@@ -24,5 +24,4 @@ Thumbs.db
 .citecheck_cache.json
 
 # Secrets
-tools/deepseek-mcp/api_key.txt
 .env
