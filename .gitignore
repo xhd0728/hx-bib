@@ -22,3 +22,7 @@ Thumbs.db
 *.report.html
 *.report.json
 .citecheck_cache.json
+
+# Secrets
+tools/deepseek-mcp/api_key.txt
+.env

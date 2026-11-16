@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "deepseek-search": {
+      "command": "conda",
+      "args": [
+        "run",
+        "--no-capture-output",
+        "-n",
+        "bib",
+        "python",
+        "tools/deepseek-mcp/server.py"
+      ]
+    }
+  }
+}
