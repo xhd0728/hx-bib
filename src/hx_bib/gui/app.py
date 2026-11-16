@@ -10,6 +10,9 @@ One page, one job per tab:
    校验引用 / Verify     multi-source hallucination verification
    预设 / Venues         browse venue presets (each rendering copyable)
 
+A second page, ``/table``, formats LaTeX tabular environments (one row per
+line, tidy ``&``/rules, column alignment) with a per-table diff preview.
+
 Design notes
 ------------
 * **Shared working copy.** Every applied change lands in one working copy that
@@ -39,6 +42,7 @@ from nicegui import events, ui
 
 from ..core import cleaner
 from ..core.diff import diff_documents, diff_lines, split_entries
+from ..core.latex_table import TableFormatOptions, find_tables, format_tables
 from ..core.model import Entry
 from ..core.normalize import NormalizeOptions, normalize_document
 from ..core.parser import parse_bibtex
@@ -416,6 +420,47 @@ def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
     return "".join(blocks)
 
 
+TABLE_EXAMPLE = r"""\begin{table}[t]
+\centering
+\caption{Ablation Study of CoRoute with Qwen3-32B.}
+\label{tab:answer_ablation_combined}
+\small
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lcccc}
+\toprule \textbf{Method} & \multicolumn{2}{c}{\textbf{TriviaQA}} & \multicolumn{2}{c}{\textbf{2WikiMQA}} \\ \cmidrule(l){2-3}\cmidrule(l){4-5} & \textbf{EM} & \textbf{F1} & \textbf{EM} & \textbf{F1} \\ \midrule \multicolumn{5}{l}{\textit{\textbf{Component Ablation}}} \\ \midrule Vanilla RAG & 61.5 & 70.0 & 23.4 & 27.5 \\ + Category-free rewriting & 61.2 & 69.8 & 23.7 & 27.4 \\ \bottomrule
+\end{tabular}
+\end{table}
+"""
+
+
+def table_diff_html(before: str, after: str, lang: str) -> str:
+    """Per-table side-by-side diff for the table formatter page."""
+    b_slices, _ = find_tables(before)
+    a_slices, _ = find_tables(after)
+    blocks: List[str] = []
+    for idx, (bs, asl) in enumerate(zip(b_slices, a_slices), start=1):
+        left = before[bs.begin:bs.end]
+        right = after[asl.begin:asl.end]
+        rows = diff_lines(left, right, bs.start_line, asl.start_line)
+        changed = any(r.kind != "equal" for r in rows)
+        kind = "modified" if changed else "unchanged"
+        head = (
+            f'<div class="hx-ediff-head"><span class="hx-ediff-key">'
+            f'#{idx} · {_esc(bs.name)}{_esc(bs.colspec)}</span>'
+            f'<span class="hx-kind hx-kind-{kind}">{_esc(t(lang, "kind_" + kind))}</span>'
+            f'<span class="hx-tab-note">L{bs.start_line + 1}</span></div>'
+        )
+        if not changed:
+            blocks.append(f'<section class="hx-ediff hx-ediff-unchanged">{head}</section>')
+            continue
+        blocks.append(
+            f'<section class="hx-ediff hx-ediff-modified">{head}'
+            f'<div class="hx-ediff-body"><table class="hx-diff"><tbody>'
+            f'{_diff_rows_html(rows)}</tbody></table></div></section>'
+        )
+    return "".join(blocks)
+
+
 def _summary_line(before: str, after: str, lang: str) -> str:
     changes = diff_documents(parse_bibtex(before), parse_bibtex(after))
     n_add = changes.count("added")
@@ -622,6 +667,9 @@ def register_pages() -> None:
                             ).style("color:#1e293b")
                         ui.label(t(state["lang"], "subtitle")).classes("hx-tab-note text-sm")
                     with ui.row().classes("items-center gap-2"):
+                        ui.link("LaTeX 表格 →", "/table").classes("hx-tab-note").style(
+                            "font-weight:600;color:#1d4ed8;text-decoration:none"
+                        ).mark("nav-table")
                         ui.button("中 / EN", on_click=toggle_lang).props(
                             "flat dense no-caps "
                             "aria-label='中 / EN — 切换语言 / Switch language'"
@@ -667,6 +715,65 @@ def register_pages() -> None:
                                 _build_panel(key, state, lang, doc, body)
 
             body()
+
+    @ui.page("/table")
+    def table_page() -> None:
+        ui.add_head_html(
+            "<meta name='description' content='hx-bib LaTeX table formatter — one row "
+            "per line, tidy & and rules. LaTeX 表格格式化工具。'>"
+            f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}"
+        )
+        ui.colors(primary="#1d4ed8", secondary="#0f766e", accent="#6d28d9")
+        state: dict = {
+            "lang": "zh",
+            "source_text": "",
+            "amp": "space",
+            "blank_lines": True,
+            "row_indent": 0,
+            "result": None,        # (before_text, TableFormatResult)
+        }
+
+        async def load_lang() -> None:
+            try:
+                raw = await ui.run_javascript(
+                    f"localStorage.getItem({json.dumps(_SETTINGS_KEY)})"
+                )
+                if raw:
+                    state["lang"] = json.loads(raw).get("lang") or "zh"
+                    body.refresh()
+            except Exception:  # noqa: BLE001 - no JS/browser: keep default
+                pass
+
+        if not _IN_SIM:
+            ui.timer(0.15, load_lang, once=True)
+
+        def toggle_lang() -> None:
+            state["lang"] = "en" if state["lang"] == "zh" else "zh"
+            body.refresh()
+
+        @ui.refreshable
+        def body() -> None:
+            lang = state["lang"]
+            with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+                with ui.element("header").classes("w-full"):
+                    with ui.row().classes("w-full items-center justify-between"):
+                        with ui.row().classes("items-baseline gap-3"):
+                            with ui.element("h1").classes("m-0"):
+                                ui.label("hx-bib").classes("hx-title text-3xl").style(
+                                    "color:#1e293b"
+                                )
+                            ui.label(t(lang, "table_title")).classes("hx-tab-note text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.link(t(lang, "nav_bib"), "/").classes("hx-tab-note").style(
+                                "font-weight:600;color:#1d4ed8;text-decoration:none"
+                            )
+                            ui.button("中 / EN", on_click=toggle_lang).props(
+                                "flat dense no-caps "
+                                "aria-label='中 / EN — 切换语言 / Switch language'"
+                            ).style("color:#3730a3;font-weight:700")
+                with ui.element("main").classes("w-full"):
+                    _render_table_page(state, lang, body)
+        body()
 
 
 def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> None:
@@ -772,6 +879,111 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
             state.update(venues_only=False), body.refresh(),
         )).props("flat dense").mark("venues-back")
     _panel_venues(state, lang, None, body)
+
+
+# ---------------------------------------------------------------------------
+# LaTeX table formatter page (/table)
+# ---------------------------------------------------------------------------
+def _render_table_page(state: dict, lang: str, body) -> None:
+    with ui.card().classes("hx-card w-full p-6 gap-3"):
+        ui.label(t(lang, "table_paste_title")).classes("text-base font-bold")
+        ui.label(t(lang, "table_note")).classes("hx-tab-note")
+        source = ui.textarea(
+            placeholder=t(lang, "table_paste_placeholder"),
+        ).classes("w-full").props(
+            f"outlined autogrow aria-label='{t(lang, 'table_paste_title')}'"
+        ).style(
+            "font-family:ui-monospace,monospace;font-size:12.5px"
+        ).mark("table-input")
+        if state["source_text"]:
+            source.value = state["source_text"]
+        source.on_value_change(lambda e: state.update(source_text=e.value or ""))
+
+        def run_format() -> None:
+            text = state["source_text"] or (source.value or "")
+            if not text.strip():
+                ui.notify(t(lang, "table_empty"), type="warning", position="top")
+                return
+            opts = TableFormatOptions(
+                amp_style=state["amp"],
+                blank_lines_around_rules=state["blank_lines"],
+                row_indent=state["row_indent"],
+            )
+            state["result"] = (text, format_tables(text, opts))
+            body.refresh()
+
+        with ui.row().classes("w-full items-center gap-4 flex-wrap"):
+            amp = ui.toggle(
+                {
+                    "space": t(lang, "table_amp_space"),
+                    "align": t(lang, "table_amp_align"),
+                    "none": t(lang, "table_amp_none"),
+                },
+                value=state["amp"],
+            ).props("no-caps unelevated inline").mark("table-amp")
+            amp.on_value_change(lambda e: state.update(amp=e.value or "space"))
+            blank = ui.switch(
+                t(lang, "table_blank"), value=state["blank_lines"],
+            ).mark("table-blank")
+            blank.on_value_change(lambda e: state.update(blank_lines=bool(e.value)))
+            indent = ui.number(
+                t(lang, "table_indent_label"), value=state["row_indent"],
+                min=0, max=16, step=1,
+            ).classes("w-48").mark("table-indent")
+            indent.on_value_change(
+                lambda e: state.update(row_indent=int(e.value or 0))
+            )
+
+        def load_example() -> None:
+            state["source_text"] = TABLE_EXAMPLE
+            source.value = TABLE_EXAMPLE
+
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.button(
+                t(lang, "table_example"), icon="article", on_click=load_example,
+            ).props("flat").mark("table-example")
+            ui.button(
+                t(lang, "table_format_btn"), icon="format_align_left",
+                on_click=run_format,
+            ).props("unelevated color=indigo").mark("table-format")
+
+    with ui.card().classes("hx-card w-full p-6 gap-3"):
+        res = state["result"]
+        if res is None:
+            ui.html(
+                f'<div class="hx-empty">{_esc(t(lang, "table_empty_preview"))}</div>'
+            )
+            return
+        before, result = res
+        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+            ui.html(
+                f'<span class="hx-chip" style="color:#1d4ed8;background:#1d4ed81a">'
+                f'{_esc(t(lang, "table_summary").format(tab=result.tables, rows=result.rows))}'
+                f'</span>'
+            )
+            with ui.row().classes("items-center gap-2"):
+                ui.button(
+                    t(lang, "table_copy_result"), icon="content_copy",
+                    on_click=_copy_handler(result.text, lang),
+                ).props("outline").mark("table-copy")
+                ui.button(
+                    t(lang, "table_download"), icon="download",
+                    on_click=lambda: ui.download(
+                        result.text.encode("utf-8"), "tables.tex"
+                    ),
+                ).props("outline").mark("table-download")
+        if result.tables == 0:
+            ui.html(f'<div class="hx-empty">{_esc(t(lang, "table_no_tables"))}</div>')
+        else:
+            if result.text == before and result.tables:
+                ui.label(t(lang, "table_unchanged")).classes("hx-tab-note")
+            ui.html(table_diff_html(before, result.text, lang))
+        if result.warnings:
+            with ui.expansion(
+                t(lang, "table_warnings").format(n=len(result.warnings)), icon="info",
+            ).classes("w-full"):
+                for warning in result.warnings:
+                    ui.label(f"• {warning}").classes("hx-tab-note")
 
 
 # ---------------------------------------------------------------------------

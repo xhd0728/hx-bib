@@ -8,6 +8,7 @@ normalize  canonicalize venues (abbr/full/family) and arXiv entries
 check      offline structural validation
 verify     multi-source hallucination verification (arXiv/Crossref/DBLP/OpenReview)
 venues     browse the built-in venue presets
+table      format LaTeX tabular environments (one row per line, tidy &/rules)
 gui        launch the local NiceGUI app
 """
 
@@ -549,6 +550,86 @@ def venues_search(
         console.print(
             f"[bold cyan]{venue.abbr}[/]  [dim]{venue.family} · {venue.kind}[/]  {venue.name}"
         )
+
+
+# ---------------------------------------------------------------------------
+# table
+# ---------------------------------------------------------------------------
+@app.command("table")
+def table_cmd(
+    file: str = typer.Argument(..., help="Input .tex file, or '-' for stdin."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write to this file instead of in place."),
+    stdout: bool = typer.Option(False, "--stdout", help="Print the result to stdout instead of writing."),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show diff, write nothing."),
+    amp: str = typer.Option(
+        "space", "--amp",
+        help="Column separator style: space (a & b) | align (pad cells) | none (a&b).",
+    ),
+    blank_lines: bool = typer.Option(
+        True, "--blank-lines/--no-blank-lines",
+        help="Blank line around rules (\\toprule, \\midrule, …).",
+    ),
+    indent: int = typer.Option(
+        0, "--indent", "-i", min=0,
+        help="Extra spaces before each formatted row.",
+    ),
+) -> None:
+    """Format LaTeX tabular environments: one row per line, tidy & and rules."""
+    from .core.latex_table import TableFormatOptions, format_tables
+
+    opts = TableFormatOptions(
+        amp_style=amp,
+        blank_lines_around_rules=blank_lines,
+        row_indent=indent,
+    )
+    try:
+        opts.validate()
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if file == "-":
+        text = sys.stdin.read()
+        input_path: Optional[Path] = None
+        label = "<stdin>"
+    else:
+        input_path = Path(file)
+        if not input_path.is_file():
+            raise typer.BadParameter(f"not a file: {file}")
+        text = _read_text(input_path)
+        label = str(input_path)
+
+    result = format_tables(text, opts)
+    for warning in result.warnings:
+        err_console.print(f"[yellow]⚠ {warning}[/]")
+
+    if result.tables == 0:
+        console.print(f"[yellow]No tabular-like environment found in {label}.[/]")
+
+    if stdout:
+        sys.stdout.write(result.text)
+        return
+    if dry_run:
+        if result.tables:
+            _print_line_diff(text, result.text)
+        console.print(Panel(
+            f"{result.tables} table(s) · {result.rows} row(s) · "
+            f"amp={opts.amp_style} · blank-lines={'on' if blank_lines else 'off'}",
+            title=f"table · {label}", border_style="cyan", expand=False,
+        ))
+        return
+
+    if result.text == text:
+        console.print(f"[green]✔[/] {label} is already tidy [dim]({result.tables} table(s), {result.rows} row(s))[/]")
+        return
+    target = output or input_path
+    if target is None:                                # stdin without -o
+        sys.stdout.write(result.text)
+        return
+    target.write_text(result.text, encoding="utf-8")
+    console.print(
+        f"[green]✔[/] wrote [bold]{target}[/] "
+        f"[dim]({result.tables} table(s), {result.rows} row(s))[/]"
+    )
 
 
 # ---------------------------------------------------------------------------

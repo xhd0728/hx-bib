@@ -15,6 +15,7 @@ hx-bib 是一个 BibTeX 整理工具箱：**格式化**、**清理**、**会议�
   - [check 格式校验](#check-格式校验)
   - [verify 引用核查](#verify-引用核查)
   - [venues 会议期刊预设](#venues-会议期刊预设)
+  - [table 表格格式化](#table-表格格式化)
   - [gui 图形界面](#gui-图形界面)
 - [修改预览：逐项对照 + 红绿 Diff](#修改预览逐项对照--红绿-diff)
 - [会议期刊分组规则](#会议期刊分组规则)
@@ -43,10 +44,11 @@ hx-bib clean   examples/custom.bib -r abstract --drop-others --months --doi --pa
 hx-bib normalize examples/custom.bib --venue-style family
 hx-bib check   examples/custom.bib
 hx-bib verify  examples/custom.bib --workers 4 --html report.html
+hx-bib table   paper.tex --dry-run   # LaTeX 表格格式化（先预览）
 hx-bib gui     # 打开浏览器界面
 ```
 
-所有会写文件的命令（`format` / `clean` / `normalize`）默认**原地修改**，并统一支持：
+所有会写文件的命令（`format` / `clean` / `normalize` / `table`）默认**原地修改**，并统一支持：
 
 | 选项 | 作用 |
 | --- | --- |
@@ -177,6 +179,27 @@ hx-bib venues list --family ACM     # 只看某个分组
 hx-bib venues search retrieval      # 搜索
 ```
 
+### table 表格格式化
+
+```bash
+hx-bib table paper.tex --dry-run              # 先预览逐行 Diff
+hx-bib table paper.tex                        # 原地写回
+hx-bib table paper.tex --amp align -i 2       # 按列对齐 + 行缩进 2 空格
+cat paper.tex | hx-bib table - --stdout       # 从 stdin 读取，输出到 stdout
+```
+
+只处理 `tabular` / `tabular*` / `tabularx` / `tabulary` / `longtable` / `array` 环境的**内部**，环境之外（`\begin{table}`、`\caption` 等）原样保留：
+
+| 选项 | 取值 | 说明 |
+| --- | --- | --- |
+| `--amp` | `space`（默认）/ `align` / `none` | `a & b` 单空格围绕 `&`；`align` 按列补空格对齐；`none` 紧凑的 `a&b` |
+| `--blank-lines / --no-blank-lines` | 开关（默认开） | `\toprule` / `\midrule` / `\hline` 等规则命令前后空一行（连续规则成组，`\begin` 之后 / `\end` 之前不加空行） |
+| `--indent, -i N` | 非负整数（默认 0） | 每个格式化行额外缩进 N 个空格 |
+
+规范要点：**一行只放一个数据行**（跨行书写的单元格会被合并）；每条规则命令**独立成行**；`\multicolumn` 的跨列信息保留，列对齐只按普通单元格计算宽度。
+
+安全性：分词器只在**花括号外、嵌套环境外**（如 `aligned`、`\makecell{a \\ b}`）才把 `&` / `\\` 当作列 / 行分隔；`\&`、`\%` 等转义字符与数学模式内容不受影响；表格内的 `%` 注释会被删除并给出提示（独立注释行保留）；未闭合的环境、缺 `\\` 的行等异常输入只产生警告，不会崩溃。测试会对每张格式化后的表重新解析，断言单元格 / 规则结构保持不变（含幂等性）。
+
 ### gui 图形界面
 
 ```bash
@@ -213,6 +236,7 @@ hx-bib gui --port 9000 --no-show
 
 - **高级清理**：DOI 统一、页码统一、URL 跟踪参数清除、按标题去重等开关位于「清理」选项卡的“高级清理”折叠区；
 - **会议期刊预设**：可搜索 / 按分组筛选，每条预设给出缩写 / 全称 / 归组三种写法，均可逐条复制；
+- **LaTeX 表格格式化页**：页头的「LaTeX 表格 →」进入独立页面——粘贴整篇 .tex 或表格片段，选择 `&` 风格 / 规则空行 / 行缩进后一键格式化，提供逐表红绿 Diff、提示列表和复制 / 下载 .tex；
 - **设置本地保存**：语言与所有面板选项自动保存在浏览器 `localStorage`，下次打开自动恢复；
 - 界面已通过 Lighthouse 审计（无障碍 / 最佳实践 / SEO 均为满分），主色与对比度满足 WCAG AA。
 
@@ -256,7 +280,7 @@ GUI 中可在“仅看改动”和“查看全部”之间切换（CLI 加 `--dr
 ```bash
 pip install -e ".[dev]"
 
-pytest                                    # 单元 + 集成测试（99 项）
+pytest                                    # 单元 + 集成测试（152 项）
 PYTHONPATH=src python tests/gui_smoke.py  # GUI 无头冒烟测试（NiceGUI user simulation）
 ```
 

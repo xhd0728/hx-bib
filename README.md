@@ -43,6 +43,10 @@ hx-bib verify refs.bib --workers 4 --html report.html --json report.json
 hx-bib venues list --family ACM
 hx-bib venues search retrieval
 
+# Tidy the tabular environments in a .tex file (preview first)
+hx-bib table paper.tex --dry-run
+hx-bib table paper.tex --amp align -i 2
+
 # Launch the browser UI
 hx-bib gui
 ```
@@ -57,9 +61,37 @@ hx-bib gui
 | `check` | Offline validation: required fields, year/pages shapes, unbalanced braces, duplicate keys, placeholder venues, style traps. |
 | `verify` | Network verification against arXiv, Crossref, DBLP, OpenReview (`--workers N` for concurrency); HTML/JSON reports; flags arXiv preprints that have since been accepted. |
 | `venues` | `list` / `search` the built-in conference & journal presets. |
+| `table` | Format LaTeX `tabular`-family environments: one row per line, tidy `&` / rules. `--amp space/align/none`, `--blank-lines`, `--indent`. |
 | `gui` | Local NiceGUI app (`--port`, `--host`, `--show`). |
 
 Every writing command supports `--dry-run / -n` (report only), `--stdout`, and `--output / -o`.
+
+## LaTeX tables
+
+`hx-bib table` (and the GUI's **LaTeX tables** page) reformats the body of `tabular`, `tabular*`, `tabularx`, `tabulary`, `longtable` and `array` environments — nothing outside them is touched:
+
+- **one data row per physical line** — cells that were split across lines are joined;
+- **`&` spacing**: a single space on both sides (`a & b`), column-aligned with padded cells (`--amp align`), or fully compact (`a&b`, `--amp none`);
+- **rules on their own lines**: `\toprule`, `\midrule`, `\bottomrule`, `\hline`, `\cline{…}`, `\cmidrule(l){…}`, `\specialrule`, `\addlinespace` … are split onto separate lines, with a blank line around them (consecutive rules stay grouped, and none is inserted right after `\begin` / before `\end`). Disable with `--no-blank-lines`.
+
+The tokenizer is deliberately conservative so formatting can never corrupt a table: cells only split on `&` and rows only on `\\` when outside braces and outside nested environments (`aligned`, `\makecell{…\\…}` …); escaped `\&` / `\%` and `\multicolumn` spans are preserved; `%` comments inside a table are dropped with a warning, standalone comment lines kept; malformed input (unclosed environment, unterminated row) produces warnings instead of exceptions. The test suite re-parses every formatted table and asserts the cell/rule structure is unchanged, including idempotency.
+
+```text
+\begin{tabular}{lcccc}
+\toprule
+
+\textbf{Method} & \multicolumn{2}{c}{\textbf{TriviaQA}} & \multicolumn{2}{c}{\textbf{2WikiMQA}} \\
+
+\cmidrule(l){2-3}
+\cmidrule(l){4-5}
+
+ & \textbf{EM} & \textbf{F1} & \textbf{EM} & \textbf{F1} \\
+
+\midrule
+...
+```
+
+The GUI page (`/table`, linked from the header as **LaTeX 表格**) offers a paste box, the `&`-style / blank-line / indent options, a per-table red/green diff, copy and `.tex` download.
 
 ## Diff previews
 

@@ -1,6 +1,18 @@
 """GUI rendering helper tests: itemized list, per-entry diff, mode toggle."""
 
-from hx_bib.gui.app import changes_html, entry_diff_html
+from hx_bib.gui.app import changes_html, entry_diff_html, table_diff_html
+
+TABLE_BEFORE = (
+    "\\begin{tabular}{cc}\n"
+    "a & b \\\\ c & d \\\\\n"
+    "\\end{tabular}\n"
+)
+TABLE_AFTER = (
+    "\\begin{tabular}{cc}\n"
+    "a & b \\\\\n"
+    "c & d \\\\\n"
+    "\\end{tabular}\n"
+)
 
 BEFORE = """@article{a,
   title = {Old title.},
@@ -80,3 +92,23 @@ def test_entry_diff_escapes_markup():
     )
     assert "<b>bold</b>" not in html
     assert "&lt;b&gt;bold&lt;/b&gt;" in html
+
+
+def test_table_diff_html_per_table_blocks():
+    html = table_diff_html(TABLE_BEFORE, TABLE_AFTER, "en")
+    assert html.count('class="hx-ediff hx-ediff-modified"') == 1
+    assert "#1 · tabular{cc}" in html
+    assert 'class="replace"' in html or 'class="insert"' in html
+
+
+def test_table_diff_html_unchanged_collapses():
+    html = table_diff_html(TABLE_BEFORE, TABLE_BEFORE, "en")
+    assert 'hx-ediff-unchanged' in html
+    assert "<tbody>" not in html          # header-only card
+
+
+def test_table_diff_html_two_tables_numbered():
+    before = TABLE_BEFORE + "text\n" + TABLE_BEFORE
+    after = TABLE_AFTER + "text\n" + TABLE_AFTER
+    html = table_diff_html(before, after, "zh")
+    assert "#1 · tabular{cc}" in html and "#2 · tabular{cc}" in html

@@ -134,6 +134,23 @@ async def main() -> None:
         await user.should_see("工作副本")
         print("✓ pasted BibTeX content imported")
 
+        # LaTeX table formatter page (/table).
+        await user.open("/table")
+        await user.should_see("LaTeX 表格格式化")
+        user.find(marker="table-example").click()
+        await settle()
+        user.find(marker="table-format").click()
+        await settle()
+        await user.should_see("个表格")
+        print("✓ table formatter: example loads and formats")
+
+        user.find(marker="table-input").clear()
+        user.find(marker="table-input").type("\\begin{tabular}{cc} a & b \\\\ \\end{tabular}")
+        user.find(marker="table-format").click()
+        await settle()
+        await user.should_see("个表格")
+        print("✓ table formatter: pasted table formats")
+
     print("\nAll GUI smoke checks passed.")
 
 
