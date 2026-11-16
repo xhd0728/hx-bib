@@ -273,6 +273,10 @@ def clean_cmd(
     title_period: bool = typer.Option(False, "--title-period", help="Strip a trailing '.' from titles."),
     dedupe: bool = typer.Option(False, "--dedupe", help="Drop duplicate cite keys."),
     keep_last: bool = typer.Option(False, "--keep-last", help="With --dedupe, keep the last duplicate."),
+    doi: bool = typer.Option(False, "--doi", help="Strip https://doi.org/ & doi: prefixes from DOIs."),
+    pages: bool = typer.Option(False, "--pages", help="Normalize page ranges to 'start--end'."),
+    dedupe_title: bool = typer.Option(False, "--dedupe-title", help="Drop entries with a repeated title."),
+    clean_urls: bool = typer.Option(False, "--clean-urls", help="Remove utm_*/fbclid/gclid tracking params from URLs."),
 ) -> None:
     """Clean fields and entries (composable with --dry-run diff preview)."""
     text, doc = _load(file)
@@ -293,8 +297,16 @@ def clean_cmd(
         notes += cleaner.normalize_months(doc)
     if title_period:
         notes += cleaner.strip_title_periods(doc)
+    if doi:
+        notes += cleaner.normalize_dois(doc)
+    if pages:
+        notes += cleaner.unify_page_ranges(doc)
+    if clean_urls:
+        notes += cleaner.strip_url_tracking(doc)
     if dedupe:
         notes += cleaner.dedupe_entries(doc, keep="last" if keep_last else "first")
+    if dedupe_title:
+        notes += cleaner.dedupe_by_title(doc, keep="last" if keep_last else "first")
     after = render_document(doc, FormatOptions())
     _finish(file, text, after, output, dry_run, stdout, notes)
 
@@ -415,6 +427,7 @@ def verify_cmd(
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore the on-disk HTTP cache."),
     verbose: bool = typer.Option(False, "--verbose", help="Print every HTTP request."),
     retries: int = typer.Option(1, "--retries", min=0, max=3, help="Retry passes for rate-limited entries."),
+    workers: int = typer.Option(1, "--workers", "-j", min=1, max=8, help="Concurrent workers (per-host politeness is still enforced)."),
 ) -> None:
     """Verify citations against arXiv / Crossref / DBLP / OpenReview."""
     _, doc = _load(file)
@@ -446,7 +459,7 @@ def verify_cmd(
         def on_progress(idx: int, total: int, key: str) -> None:
             progress.update(task, completed=idx, description=f"checking {key}")
 
-        results = verify_entries(net, entries, progress=on_progress)
+        results = verify_entries(net, entries, progress=on_progress, workers=workers)
 
     for attempt in range(retries):
         pending = [r for r in results if r.any_error and r.verdict != "OK"]

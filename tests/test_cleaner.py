@@ -116,3 +116,64 @@ def test_dedupe_keep_first_and_last():
 
     with pytest.raises(ValueError):
         cleaner.dedupe_entries(parse_bibtex(text), keep="middle")
+
+
+def test_normalize_dois():
+    doc = parse_bibtex(
+        "@article{a, doi = {https://doi.org/10.1234/ABC}}\n"
+        "@article{b, doi = {DOI: 10.5678/xyz}}\n"
+        "@article{c, doi = {10.9999/ok}}"
+    )
+    notes = cleaner.normalize_dois(doc)
+    assert doc.find("a").get("doi") == "10.1234/ABC"
+    assert doc.find("b").get("doi") == "10.5678/xyz"
+    assert doc.find("c").get("doi") == "10.9999/ok"
+    assert len(notes) == 2
+    # Idempotent
+    assert cleaner.normalize_dois(doc) == []
+
+
+def test_unify_page_ranges():
+    doc = parse_bibtex(
+        "@article{a, pages = {12-34}}\n"
+        "@article{b, pages = {5–9}}\n"
+        "@article{c, pages = {100--200}}"
+    )
+    notes = cleaner.unify_page_ranges(doc)
+    assert doc.find("a").get("pages") == "12--34"
+    assert doc.find("b").get("pages") == "5--9"
+    assert doc.find("c").get("pages") == "100--200"
+    assert len(notes) == 2
+    assert cleaner.unify_page_ranges(doc) == []
+
+
+def test_strip_url_tracking():
+    doc = parse_bibtex(
+        "@article{a, url = {https://ex.org/p?utm_source=x&utm_medium=y&id=7}}\n"
+        "@article{b, url = {https://ex.org/q?fbclid=abc}}\n"
+        "@article{c, url = {https://ex.org/r?page=2}}"
+    )
+    notes = cleaner.strip_url_tracking(doc)
+    assert doc.find("a").get("url") == "https://ex.org/p?id=7"
+    assert doc.find("b").get("url") == "https://ex.org/q"
+    assert doc.find("c").get("url") == "https://ex.org/r?page=2"  # untouched
+    assert len(notes) == 2
+
+
+def test_dedupe_by_title():
+    text = (
+        "@article{a, title = {The Same Paper}}\n"
+        "@article{b, title = {Another}}\n"
+        "@article{c, title = {the same paper!}}"
+    )
+    doc = parse_bibtex(text)
+    notes = cleaner.dedupe_by_title(doc, keep="first")
+    assert [e.key for e in doc.entries] == ["a", "b"]
+    assert len(notes) == 1
+
+    doc = parse_bibtex(text)
+    cleaner.dedupe_by_title(doc, keep="last")
+    assert [e.key for e in doc.entries] == ["b", "c"]
+
+    with pytest.raises(ValueError):
+        cleaner.dedupe_by_title(parse_bibtex(text), keep="middle")

@@ -7,6 +7,7 @@ from .checker import (  # noqa: F401
     OK,
     WARN,
     CheckResult,
+    RunControl,
     SEVERITY_LABEL,
     SEVERITY_ORDER,
     prefetch_arxiv,

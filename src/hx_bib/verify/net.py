@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -41,7 +43,13 @@ def default_cache_path() -> str:
 
 
 class Net:
-    """Throttled, cached HTTP GET helper (stdlib only)."""
+    """Throttled, cached HTTP GET helper (stdlib only).
+
+    Thread-safe: concurrent workers share one :class:`Net`; the per-host
+    politeness spacing and the on-disk cache are guarded by locks, and cache
+    writes are atomic (temp file + rename) so several processes may share
+    the same cache file safely.
+    """
 
     def __init__(
         self,
@@ -60,6 +68,8 @@ class Net:
         self._last = 0.0
         self._host_last: Dict[str, float] = {}
         self._host_penalty: Dict[str, float] = {}
+        self._lock = threading.Lock()      # protects throttling state
+        self._save_lock = threading.Lock()  # serializes cache writes
         self.arxiv_prefetch: Optional[Dict[str, Optional[dict]]] = None
         if use_cache and os.path.exists(self.cache_path):
             try:
@@ -72,26 +82,39 @@ class Net:
     def save(self) -> None:
         if not self.use_cache:
             return
-        try:
-            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
-            with open(self.cache_path, "w", encoding="utf-8") as fh:
-                json.dump(self.cache, fh)
-        except OSError:
-            pass
+        with self._save_lock:
+            try:
+                os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+                fd, tmp = tempfile.mkstemp(
+                    dir=os.path.dirname(self.cache_path), suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump(self.cache, fh)
+                    os.replace(tmp, self.cache_path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+            except OSError:
+                pass
 
     # -- throttling ----------------------------------------------------------
     def _throttle(self, host: Optional[str]) -> None:
-        now = time.time()
-        wait = self.delay - (now - self._last)
-        if host:
-            need = HOST_MIN_INTERVAL.get(host, 0.0) + self._host_penalty.get(host, 0.0)
-            wait = max(wait, need - (now - self._host_last.get(host, 0.0)))
-        if wait > 0:
-            time.sleep(wait)
-        t = time.time()
-        self._last = t
-        if host:
-            self._host_last[host] = t
+        with self._lock:
+            now = time.time()
+            wait = self.delay - (now - self._last)
+            if host:
+                need = HOST_MIN_INTERVAL.get(host, 0.0) + self._host_penalty.get(host, 0.0)
+                wait = max(wait, need - (now - self._host_last.get(host, 0.0)))
+            if wait > 0:
+                time.sleep(wait)
+            t = time.time()
+            self._last = t
+            if host:
+                self._host_last[host] = t
 
     def get(
         self,

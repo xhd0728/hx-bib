@@ -1,0 +1,115 @@
+"""Thread-safety / pause-cancel tests for batch verification (no network)."""
+
+import threading
+import time
+
+from hx_bib.core.parser import parse_bibtex
+from hx_bib.verify import checker
+from hx_bib.verify.checker import CheckResult, RunControl, OK
+
+
+class _FakeNet:
+    def save(self):
+        pass
+
+
+def _entries(n=10):
+    text = "\n".join(f"@article{{k{i}, title = {{T{i}}}}}" for i in range(n))
+    return parse_bibtex(text).entries
+
+
+def test_workers_produce_all_results(monkeypatch):
+    seen = []
+    lock = threading.Lock()
+
+    def fake_verify(net, entry):
+        with lock:
+            seen.append(entry.key)
+        time.sleep(0.01)
+        return CheckResult(entry=entry, verdict=OK)
+
+    monkeypatch.setattr(checker, "verify_entry", fake_verify)
+    entries = _entries(12)
+    results = checker.verify_entries(_FakeNet(), entries, workers=4)
+    assert len(results) == 12
+    assert sorted(r.entry.key for r in results) == sorted(e.key for e in entries)
+    assert sorted(seen) == sorted(e.key for e in entries)
+
+
+def test_progress_called_once_per_entry(monkeypatch):
+    calls = []
+
+    def fake_verify(net, entry):
+        return CheckResult(entry=entry, verdict=OK)
+
+    monkeypatch.setattr(checker, "verify_entry", fake_verify)
+    entries = _entries(6)
+    checker.verify_entries(
+        _FakeNet(), entries, workers=3,
+        progress=lambda done, total, key: calls.append((done, total, key)),
+    )
+    assert len(calls) == 6
+    assert sorted(c[0] for c in calls) == [1, 2, 3, 4, 5, 6]
+    assert all(c[1] == 6 for c in calls)
+
+
+def test_worker_exception_does_not_kill_run(monkeypatch):
+    def fake_verify(net, entry):
+        if entry.key == "k3":
+            raise RuntimeError("boom")
+        return CheckResult(entry=entry, verdict=OK)
+
+    monkeypatch.setattr(checker, "verify_entry", fake_verify)
+    results = checker.verify_entries(_FakeNet(), _entries(6), workers=2)
+    assert len(results) == 6
+    bad = [r for r in results if r.entry.key == "k3"][0]
+    assert bad.verdict != OK and bad.any_error
+
+
+def test_cancel_returns_partial_results(monkeypatch):
+    def fake_verify(net, entry):
+        time.sleep(0.02)
+        return CheckResult(entry=entry, verdict=OK)
+
+    monkeypatch.setattr(checker, "verify_entry", fake_verify)
+    control = RunControl()
+    stop = threading.Timer(0.05, control.cancel)
+    stop.start()
+    results = checker.verify_entries(
+        _FakeNet(), _entries(20), workers=1, control=control
+    )
+    stop.join()
+    assert 0 < len(results) < 20
+
+
+def test_pause_blocks_progress_until_resume(monkeypatch):
+    done = []
+
+    def fake_verify(net, entry):
+        done.append(entry.key)
+        return CheckResult(entry=entry, verdict=OK)
+
+    monkeypatch.setattr(checker, "verify_entry", fake_verify)
+    control = RunControl()
+    control.pause()
+    entries = _entries(4)
+    t = threading.Thread(
+        target=checker.verify_entries,
+        args=(_FakeNet(), entries),
+        kwargs={"workers": 2, "control": control},
+    )
+    t.start()
+    time.sleep(0.15)
+    assert done == []          # workers are parked while paused
+    control.resume()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert len(done) == 4
+
+
+def test_run_control_wait_semantics():
+    control = RunControl()
+    assert control.wait_if_paused() is True    # not paused → proceed
+    control.pause()
+    threading.Timer(0.1, control.cancel).start()
+    assert control.wait_if_paused() is False   # cancelled while paused

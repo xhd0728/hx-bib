@@ -12,6 +12,9 @@ The verdict model mirrors the reference ``hallu-citation-check`` demo:
 
 from __future__ import annotations
 
+import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -74,6 +77,34 @@ class CheckResult:
 
 
 ProgressFn = Callable[[int, int, str], None]
+
+
+class RunControl:
+    """Pause / cancel handle shared between the UI and worker threads.
+
+    ``paused`` and ``cancelled`` are :class:`threading.Event` objects so the
+    same instance can be flipped from GUI callbacks while workers poll it.
+    """
+
+    def __init__(self) -> None:
+        self.paused = threading.Event()
+        self.cancelled = threading.Event()
+
+    def pause(self) -> None:
+        self.paused.set()
+
+    def resume(self) -> None:
+        self.paused.clear()
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+        self.paused.clear()
+
+    def wait_if_paused(self) -> bool:
+        """Block while paused. Return False once the run was cancelled."""
+        while self.paused.is_set() and not self.cancelled.is_set():
+            time.sleep(0.2)
+        return not self.cancelled.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +309,41 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
             else:
                 search_errored = search_errored or dblp.error
 
+    # arXiv acceptance check: an arXiv-only entry gets one DBLP probe to see
+    # whether a formally published version exists (non-CoRR record).
+    if (
+        "arXiv" in records
+        and bib_title
+        and not any(k in records for k in ("Crossref", "DBLP", "OpenReview"))
+    ):
+        parsed = [b for b in parse_bib_authors(bib_authors) if not b.get("etal")]
+        first_author = parsed[0]["surname"] if parsed else None
+        dblp = dblp_search(net, bib_title, first_author=first_author)
+        evidence.append(dblp)
+        if dblp.found:
+            if (dblp.venue or "").upper() != "CORR":
+                records["DBLP"] = dblp
+                add(INFO, (
+                    f"arXiv preprint has a published version on DBLP: "
+                    f"“{delatex(dblp.title)}” — {dblp.venue or '?'} {dblp.year or ''}".strip()
+                ))
+            else:
+                add(INFO, "DBLP indexes only the CoRR preprint — no formal publication found yet")
+        elif dblp.error:
+            search_errored = True
+
+    arxiv_rec = records.get("arXiv")
+    if arxiv_rec is not None:
+        if arxiv_rec.venue and arxiv_rec.venue != "arXiv":
+            add(INFO, f"arXiv journal reference: {arxiv_rec.venue} (accepted / published)")
+        else:
+            m = re.search(r"comment:\s*(.+)", arxiv_rec.note or "")
+            if m and re.search(
+                r"accept|to appear|appear(?:s)? at|camera[- ]ready|published",
+                m.group(1), re.I,
+            ):
+                add(INFO, "arXiv comment suggests acceptance: " + m.group(1)[:140])
+
     title_ref = (
         records.get("arXiv") or records.get("Crossref")
         or records.get("OpenReview") or records.get("DBLP")
@@ -296,6 +362,11 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
         author_status, author_message, author_diff = cmp_authors(bib_authors, title_ref)
         if author_status != OK:
             add(author_status, "authors: " + author_message)
+    if bib_authors and any(
+        b.get("etal") for b in parse_bib_authors(bib_authors)
+    ):
+        add(INFO, "author list ends with 'and others' (truncated) — "
+                  "the full author list is recommended")
     if year_ref:
         year_source = year_ref.source
         year_is_preprint = year_source == "arXiv" or (
@@ -389,9 +460,25 @@ def verify_entries(
     net: Net,
     entries: List[Entry],
     progress: Optional[ProgressFn] = None,
+    workers: int = 1,
+    control: Optional[RunControl] = None,
 ) -> List[CheckResult]:
-    results: List[CheckResult] = []
-    for idx, entry in enumerate(entries, 1):
+    """Verify entries, optionally with ``workers`` concurrent threads.
+
+    Concurrency is safe because :class:`Net` enforces per-host politeness
+    spacing under a lock — parallel workers speed up cross-host lookups
+    without hammering any single service. ``control`` allows pausing and
+    cancelling the run between entries; a cancelled run returns the results
+    completed so far.
+    """
+    entries = list(entries)
+    total = len(entries)
+    results: List[Optional[CheckResult]] = [None] * total
+    counter = {"done": 0}
+    lock = threading.Lock()
+    task_iter = iter(enumerate(entries))
+
+    def run_one(idx: int, entry: Entry) -> None:
         try:
             result = verify_entry(net, entry)
         except Exception as exc:  # noqa: BLE001 - never let one entry kill the run
@@ -400,17 +487,48 @@ def verify_entries(
                 issues=[(WARN, f"checker error: {exc}")],
                 any_error=True,
             )
-        results.append(result)
+        results[idx] = result
+        with lock:
+            counter["done"] += 1
+            done = counter["done"]
         if progress:
-            progress(idx, len(entries), entry.key)
+            progress(done, total, entry.key)
         net.save()
-    return results
+
+    def worker() -> None:
+        while True:
+            if control is not None and not control.wait_if_paused():
+                return
+            with lock:
+                try:
+                    idx, entry = next(task_iter)
+                except StopIteration:
+                    return
+            run_one(idx, entry)
+
+    if workers <= 1:
+        worker()
+    else:
+        n = max(1, min(workers, total))
+        threads = [threading.Thread(target=worker, daemon=True) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    return [r for r in results if r is not None]
 
 
-def retry_failed(net: Net, results: List[CheckResult], pass_no: int = 1) -> List[CheckResult]:
+def retry_failed(
+    net: Net,
+    results: List[CheckResult],
+    pass_no: int = 1,
+    control: Optional[RunControl] = None,
+) -> List[CheckResult]:
     """Re-verify entries whose lookups failed transiently (cached lookups are free)."""
     updated = list(results)
     for idx, res in enumerate(results):
+        if control is not None and not control.wait_if_paused():
+            break
         if res.any_error and res.verdict != OK:
             updated[idx] = verify_entry(net, res.entry)
     net.save()

@@ -84,10 +84,20 @@ def _arxiv_entry_to_record(elem: ET.Element) -> Optional[SourceRecord]:
     published = elem.findtext("a:published", "", ns) or ""
     year = published[:4] if published[:4].isdigit() else None
     id_url = (elem.findtext("a:id", "", ns) or "").strip()
+    # journal_ref / comment tell us whether the preprint was accepted (or
+    # even published) at a venue — used by the "accepted?" check.
+    journal_ref = re.sub(r"\s+", " ", elem.findtext("a:journal_ref", "", ns) or "").strip()
+    comment = re.sub(r"\s+", " ", elem.findtext("a:comment", "", ns) or "").strip()
+    notes = []
+    if journal_ref:
+        notes.append("journal_ref: " + journal_ref)
+    if comment:
+        notes.append("comment: " + comment[:160])
     return SourceRecord(
         source="arXiv", found=True, title=title,
         authors=[a for a in authors if a], raw_authors=raw_authors,
-        year=year, venue="arXiv", url=id_url,
+        year=year, venue=journal_ref or "arXiv", url=id_url,
+        note="; ".join(notes),
     )
 
 
@@ -141,6 +151,23 @@ def arxiv_abs_lookup(net: Net, arxiv_id: str) -> SourceRecord:
     titles = meta.get("citation_title")
     if not titles:
         return SourceRecord(source="arXiv", found=False, error=True, note="abs page unparsed")
+    # "Journal reference" / acceptance hints live in the abs page body.
+    journal_ref = ""
+    m = re.search(r'class="[^"]*\bjref\b[^"]*"[^>]*>(.*?)</td>', body, re.I | re.S)
+    if m:
+        journal_ref = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", m.group(1))).strip()
+        journal_ref = re.sub(r"^Journal\s+ref(?:erence)?\s*:\s*", "", journal_ref, flags=re.I)
+    comment = ""
+    m = re.search(r'class="[^"]*\bcomments\b[^"]*"[^>]*>(.*?)</td>', body, re.I | re.S)
+    if m:
+        text = re.sub(r"<[^>]+>", " ", m.group(1))
+        comment = re.sub(r"\s+", " ", html.unescape(text)).strip()
+        comment = re.sub(r"^Comments?\s*:\s*", "", comment, flags=re.I)
+    notes = ["via abs page"]
+    if journal_ref:
+        notes.append("journal_ref: " + journal_ref)
+    if comment:
+        notes.append("comment: " + comment[:160])
     raw_authors: List[str] = []
     surnames: List[str] = []
     for a in meta.get("citation_author", []):
@@ -160,8 +187,8 @@ def arxiv_abs_lookup(net: Net, arxiv_id: str) -> SourceRecord:
     return SourceRecord(
         source="arXiv", found=True, title=titles[0].strip(),
         authors=surnames, raw_authors=raw_authors,
-        year=ym.group(0) if ym else None, venue="arXiv",
-        url="https://arxiv.org/abs/" + arxiv_id, note="via abs page",
+        year=ym.group(0) if ym else None, venue=journal_ref or "arXiv",
+        url="https://arxiv.org/abs/" + arxiv_id, note="; ".join(notes),
     )
 
 
