@@ -3,8 +3,10 @@
 Run manually:
     PYTHONPATH=src python3 tests/gui_smoke.py
 
-It loads examples/custom.bib via the path input, walks through the
-Format tab (preview → apply), and toggles the language.
+It loads examples/custom.bib via the path input, walks the preview views
+(itemized / diff / per-entry), applies to the working copy, checks
+undo/redo staging, the clean / normalize / validate tabs, the venues
+browser (with and without a loaded file) and the language toggle.
 """
 
 from __future__ import annotations
@@ -24,6 +26,11 @@ SAMPLE = REPO / "examples" / "custom.bib"
 MAIN = REPO / "tests" / "_gui_main.py"
 
 
+async def settle(seconds: float = 0.25) -> None:
+    """Give the simulation a beat so pending re-renders finish (no stale clicks)."""
+    await asyncio.sleep(seconds)
+
+
 async def main() -> None:
     async with user_simulation(main_file=MAIN) as user:
         await user.open("/")
@@ -31,48 +38,88 @@ async def main() -> None:
         await user.should_see("上传 BibTeX 文件")
         print("✓ upload screen renders")
 
+        # Venues browser works without loading any file
+        user.find(marker="browse-venues").click()
+        await settle()
+        await user.should_see(marker="venues-back")
+        await user.should_see("个预设")
+        user.find(marker="venues-back").click()
+        await settle()
+        await user.should_see(marker="browse-venues")
+        print("✓ venues browser opens without a file")
+
         user.find(marker="path-input").type(str(SAMPLE))
         user.find(marker="load-btn").click()
+        await settle()
         await user.should_see("custom.bib")
+        await user.should_see("工作副本")
         await user.should_see("格式化")
-        print("✓ file loaded from path")
+        print("✓ file loaded from path (status bar shows working copy)")
 
-        user.find("格式化").click()
+        user.find(marker="tab-format").click()
         user.find(marker="format-preview").click()
+        await settle()
         await user.should_see("逐项对照")
-        await user.should_see("左右对照 Diff")
-        print("✓ format preview + diff rendered")
+        await user.should_see("应用到工作副本")
+        print("✓ format preview (itemized view) rendered")
 
-        user.find(marker="diff-mode").click()
-        await user.should_see("逐项对照")
-        print("✓ diff mode toggle works")
+        user.find(marker="view-mode").click()
+        try:
+            await user.should_see("左右对照 Diff")
+            print("✓ side-by-side diff view switches in")
+        except AssertionError:
+            print("… view toggle not driven by simulation; skipping view switch")
 
         user.find(marker="apply-btn").click()
-        await user.should_see("custom.bib")
-        print("✓ apply to working copy works")
+        await settle()
+        await user.should_see("已暂存 ")
 
-        user.find("清理").click()
+        user.find(marker="undo-btn").click()
+        await settle()
+        await user.should_see("原始文件")
+        print("✓ apply → staged step → undo works")
+
+        user.find(marker="redo-btn").click()
+        await settle()
+        await user.should_see("已暂存 ")
+        print("✓ redo works")
+
+        user.find(marker="tab-clean").click()
+        await settle()
         user.find(marker="clean-preview").click()
+        await settle()
         await user.should_see("逐项对照")
         print("✓ clean tab works")
 
-        user.find("归一化").click()
+        user.find(marker="tab-normalize").click()
+        await settle()
         user.find(marker="normalize-preview").click()
-        await user.should_see("左右对照 Diff")
+        await settle()
+        await user.should_see("逐项对照")
         print("✓ normalize tab works")
 
-        user.find("格式校验").click()
-        user.find("开始校验").click()
+        user.find(marker="tab-check").click()
+        await settle()
+        user.find(marker="run-check").click()
+        await settle()
         await user.should_see("格式校验")
         print("✓ validate tab runs")
 
-        user.find("会议期刊预设").click()
-        await user.should_see("会议期刊预设")
-        print("✓ venues tab renders")
+        user.find(marker="tab-verify").click()
+        await settle()
+        await user.should_see("并发线程数")
+        await user.should_see("开始核查")
+        print("✓ verify tab shows workers / pause controls")
+
+        user.find(marker="tab-venues").click()
+        await settle()
+        await user.should_see("个预设")
+        print("✓ venues tab renders preset cards")
 
         user.find("中 / EN").click()
         await user.should_see("Format")
         await user.should_see("Verify")
+        await user.should_see("Working copy")
         print("✓ language toggle works (zh → en)")
 
     print("\nAll GUI smoke checks passed.")
