@@ -1,6 +1,6 @@
 """Diff tests: itemized field changes and side-by-side line rows."""
 
-from hx_bib.core.diff import diff_lines, diff_texts
+from hx_bib.core.diff import diff_lines, diff_texts, split_entries
 
 
 def test_detects_added_removed_modified_fields():
@@ -67,3 +67,37 @@ def test_diff_lines_rows():
 def test_diff_lines_identical():
     rows = diff_lines("a\nb\n", "a\nb\n")
     assert all(r.kind == "equal" for r in rows)
+
+
+def test_diff_lines_offsets():
+    rows = diff_lines("a\nb", "a\nc", left_offset=10, right_offset=20)
+    assert rows[0].kind == "equal"
+    assert rows[0].left_no == 11 and rows[0].right_no == 21
+    assert rows[1].left_no == 12 and rows[1].right_no == 22
+
+
+def test_split_entries_keys_and_spans():
+    text = (
+        "@string{x = {y}}\n"
+        "@article{a,\n"
+        "  title = {T}\n"
+        "}\n"
+        "\n"
+        "@book{b, title={U}}\n"
+    )
+    spans = split_entries(text)
+    assert [sp.key for sp in spans] == [None, "a", None, "b"]
+    a = spans[1]
+    assert a.start == 1
+    assert a.lines[0].startswith("@article{a")
+    assert a.lines[-1] == "}"
+    assert spans[3].lines == ["@book{b, title={U}}"]
+    assert spans[3].start == 5
+
+
+def test_split_entries_nested_braces():
+    text = "@article{a,\n  title = {A {nested} title}\n}\n"
+    spans = split_entries(text)
+    assert len(spans) == 1
+    assert spans[0].key == "a"
+    assert spans[0].lines[-1] == "}"

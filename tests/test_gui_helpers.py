@@ -1,6 +1,6 @@
-"""GUI rendering helper tests: itemized list, red/green diff, mode toggle."""
+"""GUI rendering helper tests: itemized list, per-entry diff, mode toggle."""
 
-from hx_bib.gui.app import changes_html, diff_html
+from hx_bib.gui.app import changes_html, entry_diff_html
 
 BEFORE = """@article{a,
   title = {Old title.},
@@ -39,21 +39,44 @@ def test_changes_html_no_changes():
     assert "No changes" in html
 
 
-def test_diff_html_red_green_rows():
-    html = diff_html(BEFORE, AFTER, "all", "en")
-    assert 'class="hx-diff"' in html
-    assert 'class="replace"' in html    # changed line pair
-    assert 'class="old"' in html and 'class="new"' in html
+def test_entry_diff_groups_per_entry():
+    html = entry_diff_html(BEFORE, AFTER, "all", "en")
+    assert 'class="hx-ediff hx-ediff-modified"' in html
+    assert 'class="hx-ediff hx-ediff-unchanged"' in html
+    assert html.count('class="hx-ediff-key"') == 2   # a and b, one block each
+    assert 'class="replace"' in html
+    assert 'class="old' in html and 'class="new' in html
 
 
-def test_diff_html_changed_mode_drops_equal_rows():
-    everything = diff_html(BEFORE, AFTER, "all", "en")
-    changed = diff_html(BEFORE, AFTER, "changed", "en")
-    assert changed.count("<tr") < everything.count("<tr")
-    assert 'class="equal"' not in changed
+def test_entry_diff_changed_mode_only_changed_entries():
+    changed = entry_diff_html(BEFORE, AFTER, "changed", "en")
+    assert "hx-ediff-modified" in changed
+    assert "hx-ediff-unchanged" not in changed
+    assert '>b</span>' not in changed
 
 
-def test_diff_html_escapes_markup():
-    html = diff_html("@article{a, title = {<b>bold</b>}}", "@article{a, title = {plain}}", "all", "en")
+def test_entry_diff_added_and_removed_entries():
+    added = entry_diff_html(
+        "@article{a, title={A}}",
+        "@article{a, title={A}}\n@article{b, title={B}}",
+        "changed", "en",
+    )
+    assert 'class="hx-ediff hx-ediff-added"' in added
+    assert 'class="insert"' in added
+    removed = entry_diff_html(
+        "@article{a, title={A}}\n@article{b, title={B}}",
+        "@article{a, title={A}}",
+        "changed", "en",
+    )
+    assert 'class="hx-ediff hx-ediff-removed"' in removed
+    assert 'class="delete"' in removed
+
+
+def test_entry_diff_escapes_markup():
+    html = entry_diff_html(
+        "@article{a, title = {<b>bold</b>}}",
+        "@article{a, title = {plain}}",
+        "all", "en",
+    )
     assert "<b>bold</b>" not in html
     assert "&lt;b&gt;bold&lt;/b&gt;" in html

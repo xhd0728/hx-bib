@@ -12,6 +12,7 @@ Two levels of granularity are provided:
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -120,7 +121,14 @@ class DiffRow:
     right: Optional[str]
 
 
-def diff_lines(before_text: str, after_text: str) -> List[DiffRow]:
+def diff_lines(
+    before_text: str,
+    after_text: str,
+    left_offset: int = 0,
+    right_offset: int = 0,
+) -> List[DiffRow]:
+    """Side-by-side rows. ``*_offset`` shifts the displayed line numbers (so a
+    slice of a file can diff with its original absolute line numbers)."""
     left = before_text.splitlines()
     right = after_text.splitlines()
     matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
@@ -128,14 +136,79 @@ def diff_lines(before_text: str, after_text: str) -> List[DiffRow]:
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for k in range(i2 - i1):
-                rows.append(DiffRow("equal", i1 + k + 1, left[i1 + k], j1 + k + 1, right[j1 + k]))
+                rows.append(DiffRow(
+                    "equal",
+                    left_offset + i1 + k + 1, left[i1 + k],
+                    right_offset + j1 + k + 1, right[j1 + k],
+                ))
             continue
         m, n = i2 - i1, j2 - j1
         paired = min(m, n)
         for k in range(paired):
-            rows.append(DiffRow("replace", i1 + k + 1, left[i1 + k], j1 + k + 1, right[j1 + k]))
+            rows.append(DiffRow(
+                "replace",
+                left_offset + i1 + k + 1, left[i1 + k],
+                right_offset + j1 + k + 1, right[j1 + k],
+            ))
         for k in range(paired, m):
-            rows.append(DiffRow("delete", i1 + k + 1, left[i1 + k], None, None))
+            rows.append(DiffRow("delete", left_offset + i1 + k + 1, left[i1 + k], None, None))
         for k in range(paired, n):
-            rows.append(DiffRow("insert", None, None, j1 + k + 1, right[j1 + k]))
+            rows.append(DiffRow("insert", None, None, right_offset + j1 + k + 1, right[j1 + k]))
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Per-entry slices (for entry-by-entry diffs)
+# ---------------------------------------------------------------------------
+@dataclass
+class EntrySpan:
+    """One bib entry (or the loose lines between entries) as text slices."""
+
+    key: Optional[str]   # None → lines outside any entry (@string, comments, blanks)
+    lines: List[str]
+    start: int           # 0-based line index of the first line in the source text
+
+
+_ENTRY_RE = re.compile(r"^\s*@([A-Za-z]+)\s*[{(]\s*([^,\s{}()]*)")
+
+
+def _brace_delta(line: str) -> int:
+    return (line.count("{") + line.count("(")) - (line.count("}") + line.count(")"))
+
+
+def split_entries(text: str) -> List[EntrySpan]:
+    """Split a .bib text into per-entry slices, keyed by cite key.
+
+    Loose lines between entries (blank lines, ``@string``, comments …) are
+    collected into ``key=None`` slices so callers can diff whole documents
+    entry by entry while still catching header-level changes.
+    """
+    lines = text.splitlines()
+    spans: List[EntrySpan] = []
+    pending: List[str] = []
+    pending_start = 0
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        m = _ENTRY_RE.match(line)
+        if m and m.group(1).lower() not in ("string", "preamble"):
+            if pending:
+                spans.append(EntrySpan(None, pending, pending_start))
+                pending = []
+            depth = _brace_delta(line)
+            buf = [line]
+            j = i
+            while depth > 0 and j + 1 < n:
+                j += 1
+                buf.append(lines[j])
+                depth += _brace_delta(lines[j])
+            spans.append(EntrySpan(m.group(2) or None, buf, i))
+            i = j + 1
+        else:
+            if not pending:
+                pending_start = i
+            pending.append(line)
+            i += 1
+    if pending:
+        spans.append(EntrySpan(None, pending, pending_start))
+    return spans

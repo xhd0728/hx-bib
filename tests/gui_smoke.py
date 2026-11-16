@@ -65,8 +65,8 @@ async def main() -> None:
 
         user.find(marker="view-mode").click()
         try:
-            await user.should_see("左右对照 Diff")
-            print("✓ side-by-side diff view switches in")
+            await user.should_see("按条目分组")
+            print("✓ per-entry diff view switches in")
         except AssertionError:
             print("… view toggle not driven by simulation; skipping view switch")
 
@@ -121,6 +121,18 @@ async def main() -> None:
         await user.should_see("Verify")
         await user.should_see("Working copy")
         print("✓ language toggle works (zh → en)")
+
+        # Fresh page: paste a .bib text directly (no file involved).
+        await user.open("/")
+        await user.should_see("上传 BibTeX 文件")
+        user.find(marker="paste-input").type(
+            "@article{pasted1, title = {Pasted Entry}, year = {2024}}"
+        )
+        user.find(marker="paste-load").click()
+        await settle()
+        await user.should_see("pasted.bib")
+        await user.should_see("工作副本")
+        print("✓ pasted BibTeX content imported")
 
     print("\nAll GUI smoke checks passed.")
 

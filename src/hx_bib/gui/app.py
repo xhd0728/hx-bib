@@ -38,7 +38,7 @@ from typing import Callable, Dict, List, Optional
 from nicegui import events, ui
 
 from ..core import cleaner
-from ..core.diff import diff_documents, diff_lines
+from ..core.diff import diff_documents, diff_lines, split_entries
 from ..core.model import Entry
 from ..core.normalize import NormalizeOptions, normalize_document
 from ..core.parser import parse_bibtex
@@ -88,7 +88,7 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-tab-note { color:#4b5563; font-size:13px; }
 .hx-empty { border:1.5px dashed #cbd5e1; border-radius:12px; padding:20px 16px;
             text-align:center; color:#64748b; font-size:13.5px; background:#fafbfc; }
-.hx-diff { width:100%; min-width:760px; border-collapse:collapse; font:12.5px/1.55 ui-monospace,
+.hx-diff { width:100%; min-width:560px; border-collapse:collapse; font:12.5px/1.55 ui-monospace,
            SFMono-Regular, Menlo, Consolas, monospace; table-layout: fixed; }
 .hx-diff td { padding:1px 8px; vertical-align:top; white-space:pre-wrap; word-break:break-all; }
 .hx-diff td.ln { width:44px; color:#6b7280; text-align:right; user-select:none; }
@@ -98,6 +98,27 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-diff tr.replace td.old { background:#fee2e2; }
 .hx-diff tr.replace td.new { background:#dcfce7; }
 .hx-diff tr.equal td { color:#6b7280; }
+.hx-diff td.empty { background: repeating-linear-gradient(45deg,
+  #fafbfc, #fafbfc 5px, #f1f3f6 5px, #f1f3f6 10px); }
+.hx-ediff { border:1px solid #e5e7eb; border-radius:12px; margin:12px 0;
+            overflow:hidden; background:#fff; }
+.hx-ediff-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+                 padding:7px 12px; font-size:13px; background:#f8fafc;
+                 border-bottom:1px solid #eef2f7; }
+.hx-ediff-added .hx-ediff-head { background:#f0fdf4; border-bottom-color:#dcfce7; }
+.hx-ediff-removed .hx-ediff-head { background:#fef2f2; border-bottom-color:#fee2e2; }
+.hx-ediff-modified .hx-ediff-head { background:#fffbeb; border-bottom-color:#fef3c7; }
+.hx-ediff-unchanged { border-color:#eef2f7; }
+.hx-ediff-unchanged .hx-ediff-head { border-bottom:none; opacity:.72; }
+.hx-ediff-key { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                font-weight:700; color:#0f172a; }
+.hx-ediff-body { overflow-x:auto; }
+.hx-kind { display:inline-block; padding:1px 9px; border-radius:999px;
+           font-size:11.5px; font-weight:700; }
+.hx-kind-added { color:#15803d; background:#dcfce7; }
+.hx-kind-removed { color:#b91c1c; background:#fee2e2; }
+.hx-kind-modified { color:#92400e; background:#fef3c7; }
+.hx-kind-unchanged { color:#475569; background:#f1f5f9; }
 .hx-changes { width:100%; border-collapse:collapse; font-size:13.5px; }
 .hx-changes th { text-align:left; font-size:12px; color:#4b5563; text-transform:uppercase;
                  letter-spacing:.05em; border-bottom:1px solid #e5e7eb; padding:6px 8px; }
@@ -283,26 +304,116 @@ def changes_html(before: str, after: str, mode: str, lang: str) -> str:
     )
 
 
-def diff_html(before: str, after: str, mode: str, lang: str) -> str:
-    rows = diff_lines(before, after)
-    if mode == "changed":
-        rows = [r for r in rows if r.kind != "equal"]
-    if not rows:
-        return f'<div class="hx-tab-note" style="padding:12px 0">{_esc(t(lang, "no_changes"))}</div>'
+def _diff_rows_html(rows) -> str:
     body = []
     for r in rows:
-        old_no = str(r.left_no or "")
-        new_no = str(r.right_no or "")
-        old_text = _esc(r.left if r.left is not None else "")
-        new_text = _esc(r.right if r.right is not None else "")
+        has_l, has_r = r.left is not None, r.right is not None
         body.append(
-            f'<tr class="{r.kind}"><td class="ln">{old_no}</td><td class="old">{old_text}</td>'
-            f'<td class="ln">{new_no}</td><td class="new">{new_text}</td></tr>'
+            f'<tr class="{r.kind}">'
+            f'<td class="ln">{r.left_no or ""}</td>'
+            f'<td class="old{"" if has_l else " empty"}">'
+            f'{_esc(r.left) if has_l else ""}</td>'
+            f'<td class="ln">{r.right_no or ""}</td>'
+            f'<td class="new{"" if has_r else " empty"}">'
+            f'{_esc(r.right) if has_r else ""}</td></tr>'
         )
-    return (
-        '<div style="overflow-x:auto"><table class="hx-diff"><tbody>'
-        + "".join(body) + "</tbody></table></div>"
-    )
+    return "".join(body)
+
+
+def _entry_badges(before_slice: str, after_slice: str) -> str:
+    """Field-level badges for a modified entry (reuses the itemized diff)."""
+    try:
+        changes = diff_documents(parse_bibtex(before_slice), parse_bibtex(after_slice))
+    except Exception:  # noqa: BLE001 - slice may not parse standalone
+        return ""
+    changed = [d for d in changes.entries if d.kind != "unchanged"]
+    if not changed:
+        return ""
+    d = changed[0]
+    badges = []
+    if d.type_changed and d.before and d.after:
+        badges.append(
+            f'<span class="hx-field-mod">@type {_esc(d.before.type)} → '
+            f'{_esc(d.after.type)}</span>'
+        )
+    for fc in d.field_changes[:8]:
+        cls = {"added": "hx-field-add", "removed": "hx-field-del",
+               "modified": "hx-field-mod"}[fc.kind]
+        sign = {"added": "+", "removed": "−", "modified": "~"}[fc.kind]
+        badges.append(f'<span class="{cls}">{sign}{_esc(fc.field_name)}</span>')
+    extra = len(d.field_changes) - 8
+    if extra > 0:
+        badges.append(f'<span class="hx-field-mod">+{extra}</span>')
+    return "".join(badges)
+
+
+def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
+    """Side-by-side diff grouped per entry — each changed entry gets its own
+    block (header with cite key, change kind and touched fields), so adjacent
+    entries never merge into one undifferentiated wall of rows."""
+    b_spans = split_entries(before)
+    a_spans = split_entries(after)
+    b_by_key: Dict[str, object] = {}
+    for sp in b_spans:
+        if sp.key is not None and sp.key not in b_by_key:
+            b_by_key[sp.key] = sp
+    a_by_key: Dict[str, object] = {}
+    for sp in a_spans:
+        if sp.key is not None and sp.key not in a_by_key:
+            a_by_key[sp.key] = sp
+
+    def block(key_html: str, kind: str, rows=None, badges: str = "") -> str:
+        head = (
+            f'<div class="hx-ediff-head"><span class="hx-ediff-key">{key_html}</span>'
+            f'<span class="hx-kind hx-kind-{kind}">{_esc(t(lang, "kind_" + kind))}</span>'
+            f'{badges}</div>'
+        )
+        if rows is None:
+            return f'<section class="hx-ediff hx-ediff-{kind}">{head}</section>'
+        return (
+            f'<section class="hx-ediff hx-ediff-{kind}">{head}'
+            f'<div class="hx-ediff-body"><table class="hx-diff"><tbody>'
+            f'{_diff_rows_html(rows)}</tbody></table></div></section>'
+        )
+
+    blocks = []
+
+    # Lines outside any entry (@string, comments, preamble …)
+    b_free = "\n".join(line for sp in b_spans if sp.key is None for line in sp.lines)
+    a_free = "\n".join(line for sp in a_spans if sp.key is None for line in sp.lines)
+    if b_free.strip() or a_free.strip():
+        rows = diff_lines(b_free, a_free)
+        if any(r.kind != "equal" for r in rows):
+            blocks.append(block(_esc(t(lang, "free_block")), "modified", rows))
+
+    for sp in b_spans:
+        if sp.key is None:
+            continue
+        left_text = "\n".join(sp.lines)
+        a = a_by_key.get(sp.key)
+        if a is None:
+            blocks.append(block(_esc(sp.key), "removed",
+                                diff_lines(left_text, "", sp.start, 0)))
+            continue
+        right_text = "\n".join(a.lines)
+        rows = diff_lines(left_text, right_text, sp.start, a.start)
+        if not any(r.kind != "equal" for r in rows):
+            if mode != "changed":
+                blocks.append(block(_esc(sp.key), "unchanged"))
+            continue
+        blocks.append(block(_esc(sp.key), "modified", rows,
+                            _entry_badges(left_text, right_text)))
+
+    for sp in a_spans:
+        if sp.key is None or sp.key in b_by_key:
+            continue
+        blocks.append(block(_esc(sp.key), "added",
+                            diff_lines("", "\n".join(sp.lines), 0, sp.start)))
+
+    if not blocks:
+        return (f'<div class="hx-tab-note" style="padding:12px 0">'
+                f'{_esc(t(lang, "no_changes"))}</div>')
+    return "".join(blocks)
 
 
 def _summary_line(before: str, after: str, lang: str) -> str:
@@ -624,6 +735,28 @@ def _render_upload(state: dict, lang: str, body) -> None:
                 "outline color=indigo"
             ).mark("load-btn")
 
+        ui.label(t(lang, "paste_title")).classes("hx-tab-note mt-2")
+        with ui.column().classes("w-full max-w-3xl gap-2"):
+            paste_area = ui.textarea(
+                placeholder=t(lang, "paste_placeholder")
+            ).classes("w-full").props(
+                f"rows=6 aria-label='{t(lang, 'paste_placeholder')}'"
+            ).style("font-family:ui-monospace,monospace;font-size:12.5px").mark(
+                "paste-input"
+            )
+
+            def import_paste() -> None:
+                raw = (paste_area.value or "").strip()
+                if not raw:
+                    ui.notify(t(lang, "paste_empty"), type="warning", position="top")
+                    return
+                _load_text(state, body, lang, raw + "\n", "pasted.bib")
+
+            ui.button(t(lang, "paste_import"), icon="input",
+                      on_click=import_paste).props(
+                "outline color=indigo"
+            ).mark("paste-load")
+
         def browse_venues() -> None:
             state["venues_only"] = True
             body.refresh()
@@ -854,7 +987,7 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                             "font-size:12px;color:#4b5563;text-transform:uppercase;"
                             "letter-spacing:.05em;font-weight:600"
                         )
-                        ui.html(diff_html(before, result_text, mode, lang))
+                        ui.html(entry_diff_html(before, result_text, mode, lang))
                     else:
                         _render_entry_cards(ui.column().classes("w-full gap-2"),
                                             result_text, opts, lang)
