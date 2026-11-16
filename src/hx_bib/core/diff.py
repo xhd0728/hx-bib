@@ -121,6 +121,12 @@ class DiffRow:
     right: Optional[str]
 
 
+def _move_key(line: str) -> str:
+    """Normalization used to recognize *moved* lines: ignore a trailing comma
+    (it belongs to the position, not the value)."""
+    return line.rstrip().rstrip(",")
+
+
 def diff_lines(
     before_text: str,
     after_text: str,
@@ -128,33 +134,73 @@ def diff_lines(
     right_offset: int = 0,
 ) -> List[DiffRow]:
     """Side-by-side rows. ``*_offset`` shifts the displayed line numbers (so a
-    slice of a file can diff with its original absolute line numbers)."""
+    slice of a file can diff with its original absolute line numbers).
+
+    The diff is *semantic about moves*: a line that exists verbatim on both
+    sides but at a different position (e.g. a field reshuffled by the
+    formatter) is paired as ``equal`` instead of showing up as delete +
+    insert. Only lines whose content actually changed are reported as
+    ``replace`` / ``delete`` / ``insert`` —
+    “行位置变了不算修改，值变了才算”.
+    """
     left = before_text.splitlines()
     right = after_text.splitlines()
     matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
-    rows: List[DiffRow] = []
+
+    left_rows: List[DiffRow] = []
+    changed_l: List[tuple] = []  # (0-based line index, text)
+    changed_r: List[tuple] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for k in range(i2 - i1):
-                rows.append(DiffRow(
+                left_rows.append(DiffRow(
                     "equal",
                     left_offset + i1 + k + 1, left[i1 + k],
                     right_offset + j1 + k + 1, right[j1 + k],
                 ))
-            continue
-        m, n = i2 - i1, j2 - j1
-        paired = min(m, n)
-        for k in range(paired):
-            rows.append(DiffRow(
-                "replace",
-                left_offset + i1 + k + 1, left[i1 + k],
-                right_offset + j1 + k + 1, right[j1 + k],
+        else:
+            changed_l.extend((i, left[i]) for i in range(i1, i2))
+            changed_r.extend((j, right[j]) for j in range(j1, j2))
+
+    # 1) pair identical lines across the whole call (moves → context rows).
+    #    Trailing commas are ignored when matching: when the formatter moves a
+    #    field, the comma moves with the position, not with the value.
+    pool: dict = {}
+    for pos, (_, text) in enumerate(changed_r):
+        pool.setdefault(_move_key(text), []).append(pos)
+    used_r: set = set()
+    rest_l: List[tuple] = []
+    for i, text in changed_l:
+        matches = pool.get(_move_key(text))
+        if matches:
+            pos = matches.pop(0)
+            used_r.add(pos)
+            j = changed_r[pos][0]
+            left_rows.append(DiffRow(
+                "equal", left_offset + i + 1, text,
+                right_offset + j + 1, right[j],
             ))
-        for k in range(paired, m):
-            rows.append(DiffRow("delete", left_offset + i1 + k + 1, left[i1 + k], None, None))
-        for k in range(paired, n):
-            rows.append(DiffRow("insert", None, None, right_offset + j1 + k + 1, right[j1 + k]))
-    return rows
+        else:
+            rest_l.append((i, text))
+    rest_r = [(j, t) for pos, (j, t) in enumerate(changed_r) if pos not in used_r]
+
+    # 2) what is left: align positionally as replace rows, then delete / insert
+    paired = min(len(rest_l), len(rest_r))
+    for p in range(paired):
+        i, ltxt = rest_l[p]
+        j, rtxt = rest_r[p]
+        left_rows.append(DiffRow(
+            "replace", left_offset + i + 1, ltxt, right_offset + j + 1, rtxt,
+        ))
+    for i, ltxt in rest_l[paired:]:
+        left_rows.append(DiffRow("delete", left_offset + i + 1, ltxt, None, None))
+
+    left_rows.sort(key=lambda r: r.left_no)
+    tail = [
+        DiffRow("insert", None, None, right_offset + j + 1, rtxt)
+        for j, rtxt in rest_r[paired:]
+    ]
+    return left_rows + tail
 
 
 # ---------------------------------------------------------------------------

@@ -109,10 +109,18 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
            box-shadow:0 4px 10px -4px rgba(67,56,202,.55); flex:none; }
 .hx-brand { font-size:19px; line-height:1.1; }
 .hx-brand-sub { font-size:12px; color:var(--hx-muted); line-height:1.2; }
-.hx-navlink { text-decoration:none; font-size:13px; font-weight:600; color:#475569;
-              padding:7px 12px; border-radius:999px; transition:background .15s,color .15s; }
-.hx-navlink:hover { background:#f1f5f9; color:var(--hx-ink); }
-.hx-navlink-active { background:var(--hx-brand-soft); color:var(--hx-brand-ink); }
+/* ---- header mode switch (BibTeX tools ⇄ LaTeX tables) ---- */
+.hx-seg { display:flex; gap:2px; padding:3px; background:#eef0f6;
+          border:1px solid var(--hx-line); border-radius:12px; }
+.hx-seg-item { display:inline-flex; align-items:center; gap:7px; text-decoration:none !important;
+               font-size:13px; font-weight:700; color:#4b5563 !important; padding:6px 14px;
+               border-radius:9px; transition:background .15s,color .15s,box-shadow .15s;
+               white-space:nowrap; }
+.hx-seg-item:hover { color:var(--hx-ink) !important; }
+.hx-seg-item .hx-seg-ico { font-size:16px; color:inherit; }
+.hx-seg-active { background:#fff; color:var(--hx-brand-ink) !important;
+                 box-shadow:0 1px 3px rgba(15,23,42,.14); }
+@media (max-width: 680px) { .hx-brand-sub { display:none; } }
 .hx-lang { color:var(--hx-brand-ink) !important; font-weight:700; }
 /* ---- hero (upload screen) ---- */
 .hx-hero-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 12px;
@@ -212,6 +220,32 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-field-del { color:#b91c1c; background:#fee2e2; border-radius:5px; padding:0 5px; font-size:12px; }
 .hx-field-mod { color:#92400e; background:#fef3c7; border-radius:5px; padding:0 5px; font-size:12px; }
 .hx-issue { display:flex; gap:8px; padding:4px 0; font-size:13.5px; }
+/* ---- validation issue cards (expandable, severity-annotated) ---- */
+.hx-check-clean { display:flex; align-items:center; gap:8px; color:#15803d;
+                  font-size:14px; font-weight:600; padding:6px 2px; }
+.hx-check-clean .material-icons { font-size:20px; }
+.hx-issue-card { border:1px solid var(--hx-line); border-left:4px solid #cbd5e1;
+                 border-radius:10px; background:#fff; margin:7px 0; overflow:hidden; }
+.hx-issue-card summary { display:flex; align-items:center; gap:10px; padding:8px 12px;
+                         cursor:pointer; list-style:none; flex-wrap:wrap; }
+.hx-issue-card summary::-webkit-details-marker { display:none; }
+.hx-issue-card[open] summary { background:#fafbfc; border-bottom:1px solid #eef2f7; }
+.hx-issue-ico { font-size:18px; flex:none; }
+.hx-issue-key { font:700 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                color:#0f172a; }
+.hx-issue-msg { color:#334155; font-size:13.5px; flex:1 1 240px; min-width:0; }
+.hx-issue-meta { color:#6b7280; font-size:12px; white-space:nowrap; }
+.hx-issue-caret { color:#94a3b8; font-size:18px; transition:transform .15s; }
+.hx-issue-card[open] .hx-issue-caret { transform:rotate(180deg); }
+.hx-issue-body { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+                 gap:10px 18px; padding:10px 14px 12px 42px; background:#fff; }
+.hx-issue-body .lbl { font-size:11px; font-weight:700; color:var(--hx-muted);
+                      text-transform:uppercase; letter-spacing:.04em; }
+.hx-issue-body .val { font-size:13px; color:#334155; }
+.hx-issue-body .val code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas,
+                           monospace; font-weight:700; color:#0f172a; }
+.hx-issue-hint { grid-column:1/-1; background:#f8fafc; border:1px dashed #e2e8f0;
+                 border-radius:8px; padding:7px 10px; font-size:12.5px; color:#475569; }
 .hx-result { border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; margin:10px 0;
              background:#fff; }
 .hx-evidence { background:#f8fafc; border:1px dashed #e2e8f0; border-radius:8px;
@@ -267,9 +301,17 @@ def _splash_html(active: str = "tools") -> str:
     ``.nicegui-content`` has children, so the swap is visually seamless.
     """
     zh = {k: t("zh", k) for k in ("hero_badge", "upload_title", "upload_hint", "upload_button", "or_divider", "subtitle", "table_title", "table_paste_title", "table_note", "nav_tools", "nav_table")}
-    tools_cls = "hx-navlink" + (" hx-navlink-active" if active == "tools" else "")
-    table_cls = "hx-navlink" + (" hx-navlink-active" if active == "table" else "")
+    tools_cls = "hx-seg-item" + (" hx-seg-active" if active == "tools" else "")
+    table_cls = "hx-seg-item" + (" hx-seg-active" if active == "table" else "")
     sub = zh["table_title"] if active == "table" else zh["subtitle"]
+    seg = (
+        '<div class="hx-seg">'
+        f'<span class="{tools_cls}"><span class="material-icons hx-seg-ico">book</span>'
+        f'{zh["nav_tools"]}</span>'
+        f'<span class="{table_cls}"><span class="material-icons hx-seg-ico">grid_on</span>'
+        f'{zh["nav_table"]}</span>'
+        '</div>'
+    )
     if active == "table":
         body = f"""
   <main style="width:100%;max-width:1152px;margin:0 auto;padding:20px 16px 40px;">
@@ -312,10 +354,7 @@ def _splash_html(active: str = "tools") -> str:
           <div class="hx-brand-sub">{sub}</div>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;">
-        <span class="{tools_cls}">{zh["nav_tools"]}</span>
-        <span class="{table_cls}">{zh["nav_table"]}</span>
-      </div>
+      <div style="display:flex;align-items:center;gap:4px;">{seg}</div>
     </div>
   </header>{body}
   <div class="hx-splash-bar"></div>
@@ -416,6 +455,7 @@ def _new_state() -> dict:
         "verify_results": None,
         "verify_filter": "ALL",
         "check_report": None,
+        "check_filter": "ALL",
         "progress": {"done": 0, "total": 0, "key": "", "running": False, "paused": False},
         "run_control": None,
         "tab": "format",
@@ -663,29 +703,66 @@ def _summary_line(before: str, after: str, lang: str) -> str:
     )
 
 
-def check_html(report, lang: str) -> str:
-    issues = report.sorted()
+SEVERITY_ICON = {"error": "error", "warning": "warning", "info": "lightbulb"}
+
+
+def check_html(report, lang: str, flt: str = "ALL") -> str:
+    """Validation issues as expandable, severity-annotated cards.
+
+    ``flt`` is one of ``ALL`` / ``error`` / ``warning`` / ``info`` — the
+    severity tabs above the list drive it.
+    """
+    if not report.issues:
+        return (
+            f'<div class="hx-check-clean">'
+            f'<span class="material-icons">check_circle</span>'
+            f'{_esc(t(lang, "check_clean"))}</div>'
+        )
+    issues = [i for i in report.sorted() if flt in ("ALL", i.severity)]
     if not issues:
-        return f'<div style="color:#15803d;font-size:14px">✔ {_esc(t(lang, "check_clean"))}</div>'
-    rows = []
+        return f'<div class="hx-tab-note" style="padding:8px 2px">{_esc(t(lang, "no_results"))}</div>'
+    cards = []
     for issue in issues:
         color = SEVERITY_COLOR[issue.severity]
-        rows.append(
-            f'<div class="hx-issue"><span class="hx-chip" style="color:{color};'
-            f'background:{color}18;min-width:64px;text-align:center">'
-            f'{_esc(t(lang, "sev_" + issue.severity))}</span>'
-            f'<span style="font-family:ui-monospace,monospace;color:#334155">{_esc(issue.key)}</span>'
-            f'<span style="color:#475569">{_esc(issue.message)}</span></div>'
+        icon = SEVERITY_ICON[issue.severity]
+        meta_bits = []
+        if issue.line:
+            meta_bits.append(f"L{issue.line}")
+        if issue.field_name:
+            meta_bits.append(_esc(issue.field_name))
+        meta = " · ".join(meta_bits)
+        meta_html = f'<span class="hx-issue-meta">{meta}</span>' if meta else ""
+        field_val = (
+            f"<code>{_esc(issue.field_name)}</code>"
+            if issue.field_name else _esc(t(lang, "issue_none"))
         )
-    def _n(sev: str) -> str:
-        label = _esc(t(lang, "sev_" + sev + "_n"))
-        return label.format(report.count(sev))
-
-    return (
-        f'<div class="hx-tab-note" style="margin-bottom:6px">'
-        + " · ".join([_n("error"), _n("warning"), _n("info")])
-        + "</div>" + "".join(rows)
-    )
+        line_val = f"L{issue.line}" if issue.line else _esc(t(lang, "issue_none"))
+        cards.append(
+            f'<details class="hx-issue-card" style="border-left-color:{color}">'
+            f"<summary>"
+            f'<span class="material-icons hx-issue-ico" style="color:{color}">{icon}</span>'
+            f'<span class="hx-chip" style="color:{color};background:{color}1a">'
+            f'{_esc(t(lang, "sev_" + issue.severity))}</span>'
+            f'<code class="hx-issue-key">{_esc(issue.key)}</code>'
+            f'<span class="hx-issue-msg">{_esc(issue.message)}</span>'
+            f"{meta_html}"
+            f'<span class="material-icons hx-issue-caret">expand_more</span>'
+            f"</summary>"
+            f'<div class="hx-issue-body">'
+            f'<div><div class="lbl">{_esc(t(lang, "issue_entry"))}</div>'
+            f'<div class="val"><code>{_esc(issue.key)}</code></div></div>'
+            f'<div><div class="lbl">{_esc(t(lang, "issue_line"))}</div>'
+            f'<div class="val">{line_val}</div></div>'
+            f'<div><div class="lbl">{_esc(t(lang, "issue_field"))}</div>'
+            f'<div class="val">{field_val}</div></div>'
+            f'<div><div class="lbl">{_esc(t(lang, "issue_level"))}</div>'
+            f'<div class="val" style="color:{color};font-weight:700">'
+            f'{_esc(t(lang, "sev_" + issue.severity))}</div></div>'
+            f'<div class="hx-issue-hint">'
+            f'{_esc(t(lang, "sev_" + issue.severity + "_hint"))}</div>'
+            f"</div></details>"
+        )
+    return "".join(cards)
 
 
 def verify_html(results, verdict_filter: str, lang: str) -> str:
@@ -798,13 +875,15 @@ def _busy(button, busy: bool) -> None:
 
 
 def _header(lang: str, active: str, on_lang: Callable) -> None:
-    """Sticky app header shared by both pages (“tools” or “table” active)."""
-    tools_link = t(lang, "nav_tools")
-    table_link = t(lang, "nav_table")
+    """Sticky app header shared by both pages (“tools” or “table” active).
+
+    The tool-page switch is a prominent segmented control in the centre —
+    BibTeX 工具 ⇄ LaTeX 表格 — instead of two easy-to-miss text links.
+    """
     sub = t(lang, "table_title") if active == "table" else t(lang, "subtitle")
     with ui.element("header").classes("hx-header w-full"):
         with ui.row().classes(
-            "hx-header-inner w-full max-w-6xl mx-auto px-4 items-center justify-between no-wrap"
+            "hx-header-inner w-full max-w-6xl mx-auto px-4 items-center justify-between no-wrap gap-3"
         ):
             with ui.row().classes("items-center gap-3 no-wrap"):
                 with ui.element("div").classes("hx-logo"):
@@ -813,17 +892,21 @@ def _header(lang: str, active: str, on_lang: Callable) -> None:
                     with ui.element("h1").classes("m-0"):
                         ui.label("hx-bib").classes("hx-brand")
                     ui.label(sub).classes("hx-brand-sub")
-            with ui.row().classes("items-center gap-1 no-wrap"):
-                ui.link(tools_link, "/").classes(
-                    "hx-navlink" + (" hx-navlink-active" if active == "tools" else "")
-                ).mark("nav-tools")
-                ui.link(table_link, "/table").classes(
-                    "hx-navlink" + (" hx-navlink-active" if active == "table" else "")
-                ).mark("nav-table")
-                ui.button("中 / EN", on_click=on_lang).props(
-                    "flat dense no-caps "
-                    "aria-label='中 / EN — 切换语言 / Switch language'"
-                ).classes("hx-lang")
+            with ui.element("nav").classes("hx-seg").props(
+                f'aria-label="{t(lang, "nav_switch")}"'
+            ):
+                for target, label_key, icon, key in (
+                    ("/", "nav_tools", "book", "tools"),
+                    ("/table", "nav_table", "grid_on", "table"),
+                ):
+                    cls = "hx-seg-item" + (" hx-seg-active" if active == key else "")
+                    with ui.link(target=target).classes(cls).mark("nav-" + key):
+                        ui.icon(icon).classes("hx-seg-ico")
+                        ui.label(t(lang, label_key))
+            ui.button("中 / EN", on_click=on_lang).props(
+                "flat dense no-caps "
+                "aria-label='中 / EN — 切换语言 / Switch language'"
+            ).classes("hx-lang")
 
 
 def _panel_head(icon: str, title: str, note: str) -> None:
@@ -1762,13 +1845,40 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
         run_button = ui.button(t(lang, "run_check"), icon="rule").props(
             "unelevated color=primary"
         ).mark("run-check")
+        filter_row = ui.row().classes("gap-2 items-center w-full")
         result_area = ui.column().classes("w-full")
 
         def render_report(report) -> None:
             result_area.clear()
-            with result_area:
-                ui.html(check_html(report, lang))
+            filter_row.clear()
+            flt = state.get("check_filter", "ALL")
+            counts = {
+                "error": report.count("error"),
+                "warning": report.count("warning"),
+                "info": report.count("info"),
+            }
+            if not report.issues and flt != "ALL":
+                flt = state["check_filter"] = "ALL"
+            with filter_row:
                 if report.issues:
+
+                    def pick(value: str) -> None:
+                        state["check_filter"] = value
+                        render_report(report)
+
+                    ui.button(
+                        f"{t(lang, 'check_all')}  {len(report.issues)}",
+                        on_click=lambda: pick("ALL"),
+                    ).props("dense unelevated" if flt == "ALL" else "dense flat")
+                    for sev in ("error", "warning", "info"):
+                        if not counts[sev]:
+                            continue
+                        button = ui.button(
+                            f"{t(lang, 'sev_' + sev)}  {counts[sev]}",
+                            on_click=lambda v=sev: pick(v),
+                        ).props("dense unelevated" if flt == sev else "dense flat")
+                        button.style(f"color:{SEVERITY_COLOR[sev]}")
+
                     def download_json() -> None:
                         payload = {
                             "tool": "hx-bib",
@@ -1786,7 +1896,11 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                         )
 
                     ui.button(t(lang, "download_json"), icon="download",
-                              on_click=download_json).props("outline")
+                              on_click=download_json).props(
+                        "dense outline"
+                    ).style("margin-left:auto")
+            with result_area:
+                ui.html(check_html(report, lang, flt))
 
         if state.get("check_report") is not None:
             render_report(state["check_report"])

@@ -91,20 +91,20 @@ The tokenizer is deliberately conservative so formatting can never corrupt a tab
 ...
 ```
 
-The GUI page (`/table`, linked from the header as **LaTeX 表格**) offers a paste box, the `&`-style / blank-line / indent options, a per-table red/green diff, copy and `.tex` download.
+The GUI page (`/table`, reachable via the header's **BibTeX tools ⇄ LaTeX tables** switch) offers a paste box, the `&`-style / blank-line / indent options, a per-table red/green diff, copy and `.tex` download.
 
 ## Diff previews
 
 With `--dry-run` (and after every action in the GUI) you get two views of the same change set:
 
 - an **itemized list** — per entry, which fields were added (`+`), removed (`−`) or modified (`~`);
-- a **side-by-side red/green line diff** like GitHub, with before/after line numbers.
+- a **side-by-side red/green line diff** like GitHub, with before/after line numbers. The diff is move-insensitive: a field that merely changed position (e.g. the formatter reordered fields) is not flagged — only changes to its value are.
 
 The GUI goes one step further: three preview views (**itemized**, **side-by-side diff**, **per entry** — each entry card has its own copy button), a **show all / changes only** toggle, and a staging history — apply a change, preview the next one on top of it, undo / redo / reset at any time, then copy or download the final text.
 
 ## GUI workflow
 
-All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the sticky status bar — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both pages score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
+All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the sticky status bar — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. Validation results are grouped by severity (**all / error / warning / suggestion**, with counts) and every issue expands to show its entry, line, field and a fix hint. The two tool pages are switched from a prominent segmented control in the header. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both pages score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
 
 ## Venue families
 

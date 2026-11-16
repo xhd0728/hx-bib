@@ -76,6 +76,57 @@ def test_diff_lines_offsets():
     assert rows[1].left_no == 12 and rows[1].right_no == 22
 
 
+def test_diff_lines_moved_line_is_context_not_change():
+    # A line that only moved is paired as context — position is not a change.
+    before = "a = 1\nb = 2\nc = 3\n"
+    after = "c = 3\na = 1\nb = 2\n"
+    rows = diff_lines(before, after)
+    assert all(r.kind == "equal" for r in rows)
+
+
+def test_diff_lines_field_reorder_with_comma_shift():
+    # Reordering moves the trailing comma with the position, not the value.
+    before = (
+        "@inproceedings{k,\n"
+        "  pages = {1--2},\n"
+        "  title = {T},\n"
+        "  year = {2020}\n"
+        "}\n"
+    )
+    after = (
+        "@inproceedings{k,\n"
+        "  title = {T},\n"
+        "  year = {2020},\n"
+        "  pages = {1--2}\n"
+        "}\n"
+    )
+    rows = diff_lines(before, after)
+    assert all(r.kind == "equal" for r in rows)
+
+
+def test_diff_lines_value_change_survives_reorder():
+    # Only the line whose value changed is marked; moved lines stay context.
+    before = (
+        "@article{a,\n"
+        "  author = {X},\n"
+        "  title = {Old},\n"
+        "  year = {2020}\n"
+        "}\n"
+    )
+    after = (
+        "@article{a,\n"
+        "  title = {New},\n"
+        "  author = {X},\n"
+        "  year = {2020},\n"
+        "}\n"
+    )
+    rows = diff_lines(before, after)
+    changed = [r for r in rows if r.kind != "equal"]
+    assert len(changed) == 1
+    assert changed[0].kind == "replace"
+    assert "Old" in changed[0].left and "New" in changed[0].right
+
+
 def test_split_entries_keys_and_spans():
     text = (
         "@string{x = {y}}\n"
