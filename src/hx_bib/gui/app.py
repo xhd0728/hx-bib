@@ -82,16 +82,97 @@ DEFAULT_SETTINGS: dict = {
 }
 
 CSS = """
+:root { --hx-ink:#0f172a; --hx-body:#334155; --hx-muted:#5b6577; --hx-line:#e6e8f0;
+        --hx-brand:#4338ca; --hx-brand-ink:#3730a3; --hx-brand-soft:#eef2ff;
+        --hx-surface:#fff; --hx-bg:#f6f7fb; }
 body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-       background: #f5f6f8; }
-.hx-title { font-weight: 800; letter-spacing: -0.02em; }
-.hx-card { border-radius: 14px; box-shadow: 0 1px 3px rgba(15,23,42,.06);
-           border: 1px solid #e5e7eb; }
+       background: var(--hx-bg); color: var(--hx-body); }
+.q-btn { border-radius: 10px; font-weight: 600; }
+.q-field--outlined .q-field__control { border-radius: 10px; }
+.hx-title, .hx-brand, .hx-hero-title, .hx-panel-title { font-weight: 800;
+       letter-spacing: -0.02em; color: var(--hx-ink); }
+.hx-card { border-radius: 16px; background: var(--hx-surface); border: 1px solid var(--hx-line);
+           box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 10px 30px -18px rgba(15,23,42,.15); }
 .hx-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
            font-weight:700; white-space:nowrap; }
 .hx-tab-note { color:#4b5563; font-size:13px; }
-.hx-empty { border:1.5px dashed #cbd5e1; border-radius:12px; padding:20px 16px;
+.hx-empty { border:1.5px dashed #cbd5e1; border-radius:12px; padding:22px 16px;
             text-align:center; color:#64748b; font-size:13.5px; background:#fafbfc; }
+/* ---- app header ---- */
+.hx-header { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,.86);
+             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+             border-bottom: 1px solid var(--hx-line); }
+.hx-header-inner { min-height: 60px; }
+.hx-logo { width:34px; height:34px; border-radius:10px; display:flex; align-items:center;
+           justify-content:center; background:linear-gradient(135deg,#4338ca,#7c3aed);
+           color:#fff; font-weight:800; font-size:13px; letter-spacing:.02em;
+           box-shadow:0 4px 10px -4px rgba(67,56,202,.55); flex:none; }
+.hx-brand { font-size:19px; line-height:1.1; }
+.hx-brand-sub { font-size:12px; color:var(--hx-muted); line-height:1.2; }
+.hx-navlink { text-decoration:none; font-size:13px; font-weight:600; color:#475569;
+              padding:7px 12px; border-radius:999px; transition:background .15s,color .15s; }
+.hx-navlink:hover { background:#f1f5f9; color:var(--hx-ink); }
+.hx-navlink-active { background:var(--hx-brand-soft); color:var(--hx-brand-ink); }
+.hx-lang { color:var(--hx-brand-ink) !important; font-weight:700; }
+/* ---- hero (upload screen) ---- */
+.hx-hero-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 12px;
+                 border-radius:999px; background:#ecfdf5; color:#047857; font-size:12.5px;
+                 font-weight:600; border:1px solid #d1fae5; }
+.hx-hero-title { font-size:30px; line-height:1.2; margin:8px 0 2px; text-align:center; }
+.hx-hero-sub { color:var(--hx-muted); font-size:14.5px; text-align:center; }
+.hx-features { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+.hx-feature { display:inline-flex; align-items:center; gap:6px; padding:6px 13px;
+              border-radius:999px; background:#fff; border:1px solid var(--hx-line);
+              color:#475569; font-size:12.5px; font-weight:600; }
+.hx-feature .material-icons { color:var(--hx-brand); font-size:15px; }
+.hx-divider { display:flex; align-items:center; gap:12px; color:var(--hx-muted);
+              font-size:12.5px; font-weight:600; }
+.hx-divider::before, .hx-divider::after { content:""; flex:1; height:1px;
+              background:var(--hx-line); }
+/* ---- uploader as dropzone ---- */
+.hx-uploader { width:100%; }
+.hx-uploader .q-uploader__header { background:linear-gradient(180deg,#fafbff,#f4f6fd) !important;
+              color:var(--hx-ink) !important; border:2px dashed #c7d2fe; border-radius:14px;
+              transition:border-color .15s, background .15s; }
+.hx-uploader .q-uploader__header:hover { border-color:#818cf8; background:#eef2ff !important; }
+.hx-uploader .q-uploader__header-content { padding:24px 16px; justify-content:center; text-align:center; }
+.hx-uploader .q-uploader__title { font-weight:700; font-size:15px; }
+.hx-uploader .q-uploader__subtitle { display:none; }
+.hx-uploader .q-uploader__header .q-btn { background:#fff; border:1px solid var(--hx-line);
+              color:var(--hx-brand-ink); border-radius:10px; }
+/* auto-upload: hide the empty file list so the dropzone stays compact
+   (still shows entries when a file errors out) */
+.hx-uploader .q-uploader__list:not(:has(.q-uploader__file)) { display:none; }
+/* ---- workspace tabs as pills ---- */
+.hx-tabs { background:#fff; border:1px solid var(--hx-line); border-radius:14px; padding:4px;
+           box-shadow:0 1px 2px rgba(15,23,42,.03); }
+.hx-tabs .q-tab { min-height:36px; border-radius:10px; padding:0 14px; color:#4b5563;
+                  font-weight:600; font-size:13.5px; }
+.hx-tabs .q-tab--active { background:var(--hx-brand-soft); color:var(--hx-brand-ink); }
+.hx-tabs .q-tab__indicator { display:none; }
+.hx-tabs .q-tabs__content { gap:2px; }
+/* ---- panel headers / option bars ---- */
+.hx-panel-icon { width:36px; height:36px; border-radius:10px; background:var(--hx-brand-soft);
+                 display:flex; align-items:center; justify-content:center;
+                 color:var(--hx-brand-ink); flex:none; }
+.hx-panel-title { font-size:16.5px; font-weight:700; line-height:1.25; color:var(--hx-ink); }
+.hx-optbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px 20px;
+             padding:12px 14px; background:#f8fafc; border:1px solid var(--hx-line);
+             border-radius:12px; }
+.hx-optlabel { font-size:12px; font-weight:700; color:var(--hx-muted);
+               text-transform:uppercase; letter-spacing:.04em; }
+.hx-kbd { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:11.5px;
+          color:#475569; background:#f1f5f9; border:1px solid var(--hx-line);
+          border-bottom-width:2px; border-radius:6px; padding:1px 7px; }
+/* ---- sticky status bar + stage history ---- */
+.hx-status { position:sticky; top:68px; z-index:30; background:rgba(255,255,255,.94);
+             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.hx-stage { border-radius:999px !important; color:#5b6577 !important; font-weight:600;
+            font-size:12.5px !important; min-height:28px; padding:0 10px; }
+.hx-stage:hover { background:#f1f5f9; }
+.hx-stage-active { background:var(--hx-brand-soft) !important;
+                   color:var(--hx-brand-ink) !important; }
+.hx-stage-future { opacity:.45; }
 .hx-diff { width:100%; min-width:560px; border-collapse:collapse; font:12.5px/1.55 ui-monospace,
            SFMono-Regular, Menlo, Consolas, monospace; table-layout: fixed; }
 .hx-diff td { padding:1px 8px; vertical-align:top; white-space:pre-wrap; word-break:break-all; }
@@ -142,9 +223,7 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
           monospace; max-height:220px; overflow:auto; white-space:pre; }
 .hx-entry-card { border:1px solid #e5e7eb !important; border-radius:10px !important;
                  box-shadow:none !important; }
-.hx-status { position:sticky; top:8px; z-index:20; background:#ffffff; }
 .q-tab { text-transform: none; }
-.q-uploader__subtitle { color: rgba(255,255,255,.92) !important; }
 button:focus-visible, .q-field:focus-within { outline: 2px solid #6366f1; outline-offset: 1px; }
 """
 
@@ -173,6 +252,115 @@ _QUASAR_A11Y_PATCH = """
 })();
 </script>
 """
+
+# Instant brand splash: painted by the initial HTML response, before NiceGUI's
+# websocket has rendered anything.  This is what makes first paint / LCP fast
+# (the page used to stay blank until the socket connected).  It removes itself
+# as soon as the real content exists.
+def _splash_html(active: str = "tools") -> str:
+    """Static first-paint skeleton that mirrors the real page.
+
+    The initial HTML is served before the websocket renders NiceGUI elements;
+    painting a real-looking skeleton (same hero title, hero sub, dropzone)
+    means the largest contentful paint happens at first paint instead of
+    several round-trips later. The splash is removed once the real
+    ``.nicegui-content`` has children, so the swap is visually seamless.
+    """
+    zh = {k: t("zh", k) for k in ("hero_badge", "upload_title", "upload_hint", "upload_button", "or_divider", "subtitle", "table_title", "table_paste_title", "table_note", "nav_tools", "nav_table")}
+    tools_cls = "hx-navlink" + (" hx-navlink-active" if active == "tools" else "")
+    table_cls = "hx-navlink" + (" hx-navlink-active" if active == "table" else "")
+    sub = zh["table_title"] if active == "table" else zh["subtitle"]
+    if active == "table":
+        body = f"""
+  <main style="width:100%;max-width:1152px;margin:0 auto;padding:20px 16px 40px;">
+    <div class="hx-card" style="padding:20px;display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;align-items:flex-start;gap:12px;">
+        <div class="hx-panel-icon"><span class="material-icons" style="font-size:19px;color:#4338ca;">grid_on</span></div>
+        <div>
+          <div class="hx-panel-title">{zh["table_paste_title"]}</div>
+          <div class="hx-tab-note" style="margin-top:2px;">{zh["table_note"]}</div>
+        </div>
+      </div>
+      <div style="height:200px;border-radius:10px;border:1px solid #e6e8f0;background:#fafbfc;"></div>
+    </div>
+  </main>"""
+    else:
+        body = f"""
+  <main style="width:100%;max-width:1152px;margin:0 auto;padding:20px 16px 40px;">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:32px;">
+      <span class="hx-hero-badge"><span class="material-icons" style="font-size:14px;">lock</span> {zh["hero_badge"]}</span>
+      <div class="hx-hero-title">{zh["upload_title"]}</div>
+      <div class="hx-hero-sub">{zh["upload_hint"]}</div>
+    </div>
+    <div class="hx-card" style="max-width:768px;margin:16px auto 0;padding:24px;display:flex;flex-direction:column;gap:20px;">
+      <div style="border:2px dashed #c7d2fe;border-radius:14px;
+                  background:linear-gradient(180deg,#fafbff,#f4f6fd);padding:22px 16px;
+                  text-align:center;color:#0f172a;font-weight:700;font-size:14px;">{zh["upload_button"]}</div>
+      <div class="hx-divider">{zh["or_divider"]}</div>
+      <div style="height:44px;border-radius:10px;border:1px solid #e6e8f0;background:#fff;"></div>
+    </div>
+  </main>"""
+    return f"""
+<div id="hx-splash" role="status" aria-label="hx-bib loading">
+  <header class="hx-header">
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                max-width:1152px;margin:0 auto;padding:0 16px;min-height:60px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div class="hx-logo">hx</div>
+        <div>
+          <div class="hx-brand">hx-bib</div>
+          <div class="hx-brand-sub">{sub}</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <span class="{tools_cls}">{zh["nav_tools"]}</span>
+        <span class="{table_cls}">{zh["nav_table"]}</span>
+      </div>
+    </div>
+  </header>{body}
+  <div class="hx-splash-bar"></div>
+</div>
+<style>
+#hx-splash {{ position:fixed; inset:0; z-index:9999; overflow:hidden;
+  background:#f6f7fb; transition:opacity .25s ease; }}
+#hx-splash .hx-header {{ position:static; }}
+#hx-splash .hx-logo {{ animation:hx-pulse 1.1s ease-in-out infinite; }}
+#hx-splash .hx-splash-bar {{ position:fixed; top:0; left:0; height:2px; width:100%;
+  background:linear-gradient(90deg,transparent,#4338ca,transparent); opacity:.7;
+  animation:hx-slide 1.2s ease-in-out infinite; }}
+@keyframes hx-pulse {{ 0%,100% {{ transform:scale(1); opacity:1; }} 50% {{ transform:scale(.94);
+  opacity:.75; }} }}
+@keyframes hx-slide {{ 0% {{ transform:translateX(-60%); }} 100% {{ transform:translateX(60%); }} }}
+</style>
+<script>
+(function () {{
+  function drop() {{
+    var el = document.getElementById('hx-splash');
+    if (!el || el.dataset.gone) return;
+    el.dataset.gone = '1';
+    el.style.opacity = '0';
+    setTimeout(function () {{ el.remove(); }}, 280);
+  }}
+  var t0 = Date.now();
+  var iv = setInterval(function () {{
+    var c = document.querySelector('.nicegui-content');
+    if ((c && c.children.length > 0) || Date.now() - t0 > 10000) {{
+      clearInterval(iv);
+      setTimeout(drop, 60);
+    }}
+  }}, 40);
+}})();
+</script>
+"""
+
+
+def _head_html(description: str) -> str:
+    """Shared <head> payload: meta, styles, a11y patch, splash + lang attr."""
+    return (
+        f"<meta name='description' content='{description}'>"
+        f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}"
+        "<script>document.documentElement.lang='zh-CN';</script>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -489,10 +677,14 @@ def check_html(report, lang: str) -> str:
             f'<span style="font-family:ui-monospace,monospace;color:#334155">{_esc(issue.key)}</span>'
             f'<span style="color:#475569">{_esc(issue.message)}</span></div>'
         )
+    def _n(sev: str) -> str:
+        label = _esc(t(lang, "sev_" + sev + "_n"))
+        return label.format(report.count(sev))
+
     return (
         f'<div class="hx-tab-note" style="margin-bottom:6px">'
-        f'{report.count("error")} errors · {report.count("warning")} warnings · '
-        f'{report.count("info")} suggestions</div>' + "".join(rows)
+        + " · ".join([_n("error"), _n("warning"), _n("info")])
+        + "</div>" + "".join(rows)
     )
 
 
@@ -585,13 +777,62 @@ def _confirm(lang: str, title: str, body: str, on_confirm: Callable) -> None:
             ui.button(
                 t(lang, "confirm"),
                 on_click=lambda: (dialog.close(), on_confirm()),
-            ).props("unelevated color=indigo")
+            ).props("unelevated color=primary")
     dialog.open()
 
 
 def _download(state: dict, text: str, suffix: str = "bib") -> None:
     stem = Path(state["name"]).stem or "bibliography"
     ui.download(text.encode("utf-8"), f"{stem}.{suffix}")
+
+
+def _busy(button, busy: bool) -> None:
+    """Show / hide the spinner inside a button while a job runs."""
+    try:
+        if busy:
+            button.props("loading")
+        else:
+            button.props(remove="loading")
+    except Exception:  # noqa: BLE001 - widget may have been rebuilt
+        pass
+
+
+def _header(lang: str, active: str, on_lang: Callable) -> None:
+    """Sticky app header shared by both pages (“tools” or “table” active)."""
+    tools_link = t(lang, "nav_tools")
+    table_link = t(lang, "nav_table")
+    sub = t(lang, "table_title") if active == "table" else t(lang, "subtitle")
+    with ui.element("header").classes("hx-header w-full"):
+        with ui.row().classes(
+            "hx-header-inner w-full max-w-6xl mx-auto px-4 items-center justify-between no-wrap"
+        ):
+            with ui.row().classes("items-center gap-3 no-wrap"):
+                with ui.element("div").classes("hx-logo"):
+                    ui.label("hx")
+                with ui.column().classes("gap-0"):
+                    with ui.element("h1").classes("m-0"):
+                        ui.label("hx-bib").classes("hx-brand")
+                    ui.label(sub).classes("hx-brand-sub")
+            with ui.row().classes("items-center gap-1 no-wrap"):
+                ui.link(tools_link, "/").classes(
+                    "hx-navlink" + (" hx-navlink-active" if active == "tools" else "")
+                ).mark("nav-tools")
+                ui.link(table_link, "/table").classes(
+                    "hx-navlink" + (" hx-navlink-active" if active == "table" else "")
+                ).mark("nav-table")
+                ui.button("中 / EN", on_click=on_lang).props(
+                    "flat dense no-caps "
+                    "aria-label='中 / EN — 切换语言 / Switch language'"
+                ).classes("hx-lang")
+
+
+def _panel_head(icon: str, title: str, note: str) -> None:
+    with ui.row().classes("items-start gap-3 no-wrap"):
+        with ui.element("div").classes("hx-panel-icon"):
+            ui.icon(icon, size="20px")
+        with ui.column().classes("gap-0"):
+            ui.label(title).classes("hx-panel-title")
+            ui.label(note).classes("hx-tab-note")
 
 
 # ---------------------------------------------------------------------------
@@ -602,13 +843,13 @@ def register_pages() -> None:
 
     @ui.page("/")
     def main_page() -> None:
-        ui.add_head_html(
-            "<meta name='description' content='hx-bib — format, clean, normalize, "
-            "validate and verify BibTeX bibliographies. BibTeX 整理、格式校验与多源引用核查工具。'>"
-            f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}"
-        )
-        # AA-compliant primary (NiceGUI's default #5898d4 fails contrast on white).
-        ui.colors(primary="#1d4ed8", secondary="#0f766e", accent="#6d28d9")
+        ui.add_head_html(_head_html(
+            "hx-bib — format, clean, normalize, validate and verify BibTeX "
+            "bibliographies. BibTeX 整理、格式校验与多源引用核查工具。"
+        ))
+        ui.add_body_html(_splash_html("tools"))
+        # AA-compliant primary (WCAG contrast on white; NiceGUI's default fails).
+        ui.colors(primary="#4338ca", secondary="#0f766e", accent="#7c3aed")
         state = _new_state()
 
         def _apply_lang_attr() -> None:
@@ -629,6 +870,7 @@ def register_pages() -> None:
                 if raw:
                     state["settings"] = _merge_settings(DEFAULT_SETTINGS, json.loads(raw))
                     state["lang"] = state["settings"].get("lang") or state["lang"]
+                    header.refresh()
                     body.refresh()
             except Exception:  # noqa: BLE001 - no JS/browser: keep defaults
                 pass
@@ -655,75 +897,67 @@ def register_pages() -> None:
             state["settings"]["lang"] = state["lang"]
             state["settings_dirty"] = True
             _apply_lang_attr()
+            header.refresh()
             body.refresh()
 
-        with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
-            with ui.element("header").classes("w-full"):
-                with ui.row().classes("w-full items-center justify-between"):
-                    with ui.row().classes("items-baseline gap-3"):
-                        with ui.element("h1").classes("m-0"):
-                            ui.label("hx-bib").classes(
-                                "hx-title text-3xl"
-                            ).style("color:#1e293b")
-                        ui.label(t(state["lang"], "subtitle")).classes("hx-tab-note text-sm")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.link("LaTeX 表格 →", "/table").classes("hx-tab-note").style(
-                            "font-weight:600;color:#1d4ed8;text-decoration:none"
-                        ).mark("nav-table")
-                        ui.button("中 / EN", on_click=toggle_lang).props(
-                            "flat dense no-caps "
-                            "aria-label='中 / EN — 切换语言 / Switch language'"
-                        ).style("color:#3730a3;font-weight:700")
-
-            # ---------------- body ----------------
+        with ui.element("div").classes("hx-page w-full"):
             @ui.refreshable
-            def body() -> None:
-                lang = state["lang"]
-                with ui.element("main").classes("w-full"):
-                    if state["venues_only"]:
-                        _render_venues_only(state, lang, body)
-                        return
-                    if not state["text"]:
-                        _render_upload(state, lang, body)
-                        return
+            def header() -> None:
+                _header(state["lang"], "tools", toggle_lang)
+            header()
 
-                    doc = parse_bibtex(state["text"])
-                    _render_status_bar(state, lang, doc, body)
+            with ui.element("main").classes(
+                "w-full max-w-6xl mx-auto px-4 pt-5 pb-10"
+            ):
+                # ---------------- body ----------------
+                @ui.refreshable
+                def body() -> None:
+                    lang = state["lang"]
+                    with ui.element("div").classes("w-full"):
+                        if state["venues_only"]:
+                            _render_venues_only(state, lang, body)
+                            return
+                        if not state["text"]:
+                            _render_upload(state, lang, body)
+                            return
 
-                    tab_defs = [
-                        ("format", t(lang, "tab_format")),
-                        ("clean", t(lang, "tab_clean")),
-                        ("normalize", t(lang, "tab_normalize")),
-                        ("check", t(lang, "tab_check")),
-                        ("verify", t(lang, "tab_verify")),
-                        ("venues", t(lang, "tab_venues")),
-                    ]
-                    with ui.tabs(value=state["tab"]).classes("w-full").props(
-                        "align=left inline-label no-caps active-color=indigo-7 "
-                        "indicator-color=indigo-7"
-                    ) as tabs:
-                        for key, label in tab_defs:
-                            ui.tab(key, label).mark(f"tab-{key}")
+                        doc = parse_bibtex(state["text"])
+                        with ui.column().classes("w-full gap-4"):
+                            _render_status_bar(state, lang, doc, body)
 
-                    tabs.on_value_change(lambda e: state.update(tab=e.value))
+                            tab_defs = [
+                                ("format", t(lang, "tab_format")),
+                                ("clean", t(lang, "tab_clean")),
+                                ("normalize", t(lang, "tab_normalize")),
+                                ("check", t(lang, "tab_check")),
+                                ("verify", t(lang, "tab_verify")),
+                                ("venues", t(lang, "tab_venues")),
+                            ]
+                            with ui.tabs(value=state["tab"]).classes(
+                                "hx-tabs w-full"
+                            ).props("align=left inline-label no-caps") as tabs:
+                                for key, label in tab_defs:
+                                    ui.tab(key, label).mark(f"tab-{key}")
 
-                    with ui.tab_panels(tabs, value=state["tab"]).classes(
-                        "w-full bg-transparent"
-                    ):
-                        for key, _ in tab_defs:
-                            with ui.tab_panel(key).classes("p-0"):
-                                _build_panel(key, state, lang, doc, body)
+                            tabs.on_value_change(lambda e: state.update(tab=e.value))
 
-            body()
+                            with ui.tab_panels(tabs, value=state["tab"]).classes(
+                                "w-full bg-transparent"
+                            ):
+                                for key, _ in tab_defs:
+                                    with ui.tab_panel(key).classes("p-0 pt-4"):
+                                        _build_panel(key, state, lang, doc, body)
+
+                body()
 
     @ui.page("/table")
     def table_page() -> None:
-        ui.add_head_html(
-            "<meta name='description' content='hx-bib LaTeX table formatter — one row "
-            "per line, tidy & and rules. LaTeX 表格格式化工具。'>"
-            f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}"
-        )
-        ui.colors(primary="#1d4ed8", secondary="#0f766e", accent="#6d28d9")
+        ui.add_head_html(_head_html(
+            "hx-bib LaTeX table formatter — one row per line, tidy & and rules. "
+            "LaTeX 表格格式化工具。"
+        ))
+        ui.add_body_html(_splash_html("table"))
+        ui.colors(primary="#4338ca", secondary="#0f766e", accent="#7c3aed")
         state: dict = {
             "lang": "zh",
             "source_text": "",
@@ -733,6 +967,15 @@ def register_pages() -> None:
             "result": None,        # (before_text, TableFormatResult)
         }
 
+        def _apply_lang_attr() -> None:
+            if _IN_SIM:
+                return
+            try:
+                code = "zh-CN" if state["lang"] == "zh" else "en"
+                ui.run_javascript(f"document.documentElement.lang = {json.dumps(code)}")
+            except Exception:  # noqa: BLE001
+                pass
+
         async def load_lang() -> None:
             try:
                 raw = await ui.run_javascript(
@@ -740,40 +983,34 @@ def register_pages() -> None:
                 )
                 if raw:
                     state["lang"] = json.loads(raw).get("lang") or "zh"
+                    header.refresh()
                     body.refresh()
             except Exception:  # noqa: BLE001 - no JS/browser: keep default
                 pass
 
         if not _IN_SIM:
             ui.timer(0.15, load_lang, once=True)
+        _apply_lang_attr()
 
         def toggle_lang() -> None:
             state["lang"] = "en" if state["lang"] == "zh" else "zh"
+            _apply_lang_attr()
+            header.refresh()
             body.refresh()
 
-        @ui.refreshable
-        def body() -> None:
-            lang = state["lang"]
-            with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
-                with ui.element("header").classes("w-full"):
-                    with ui.row().classes("w-full items-center justify-between"):
-                        with ui.row().classes("items-baseline gap-3"):
-                            with ui.element("h1").classes("m-0"):
-                                ui.label("hx-bib").classes("hx-title text-3xl").style(
-                                    "color:#1e293b"
-                                )
-                            ui.label(t(lang, "table_title")).classes("hx-tab-note text-sm")
-                        with ui.row().classes("items-center gap-2"):
-                            ui.link(t(lang, "nav_bib"), "/").classes("hx-tab-note").style(
-                                "font-weight:600;color:#1d4ed8;text-decoration:none"
-                            )
-                            ui.button("中 / EN", on_click=toggle_lang).props(
-                                "flat dense no-caps "
-                                "aria-label='中 / EN — 切换语言 / Switch language'"
-                            ).style("color:#3730a3;font-weight:700")
-                with ui.element("main").classes("w-full"):
-                    _render_table_page(state, lang, body)
-        body()
+        with ui.element("div").classes("hx-page w-full"):
+            @ui.refreshable
+            def header() -> None:
+                _header(state["lang"], "table", toggle_lang)
+            header()
+
+            with ui.element("main").classes(
+                "w-full max-w-6xl mx-auto px-4 pt-5 pb-10"
+            ):
+                @ui.refreshable
+                def body() -> None:
+                    _render_table_page(state, state["lang"], body)
+                body()
 
 
 def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> None:
@@ -799,10 +1036,17 @@ def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "
 
 
 def _render_upload(state: dict, lang: str, body) -> None:
-    with ui.card().classes("hx-card w-full p-8 items-center gap-4"):
-        ui.label(t(lang, "upload_title")).classes("text-xl font-bold")
-        ui.label(t(lang, "upload_hint")).classes("hx-tab-note")
+    # ---- hero ----
+    with ui.column().classes("w-full items-center gap-1 pt-8 pb-1"):
+        ui.html(
+            '<span class="hx-hero-badge"><span class="material-icons" '
+            'style="font-size:14px;">lock</span> '
+            f"{_esc(t(lang, 'hero_badge'))}</span>"
+        )
+        ui.label(t(lang, "upload_title")).classes("hx-hero-title")
+        ui.label(t(lang, "upload_hint")).classes("hx-hero-sub")
 
+    with ui.card().classes("hx-card w-full max-w-3xl mx-auto p-6 gap-5 mt-4"):
         async def on_upload(e: events.UploadEventArguments) -> None:
             data = e.file.read()
             if inspect.isawaitable(data):
@@ -815,13 +1059,14 @@ def _render_upload(state: dict, lang: str, body) -> None:
             on_upload=on_upload,
             auto_upload=True,
             max_file_size=20_000_000,
-        ).props('accept=".bib,.bibtex,text/plain"').classes("w-96")
+        ).props('accept=".bib,.bibtex,text/plain"').classes("hx-uploader")
 
-        ui.label(t(lang, "or_path")).classes("hx-tab-note mt-2")
-        with ui.row().classes("items-center gap-2"):
+        ui.html(f'<div class="hx-divider">{_esc(t(lang, "or_divider"))}</div>')
+
+        with ui.row().classes("w-full items-stretch gap-2 no-wrap"):
             path_input = ui.input(placeholder=t(lang, "path_placeholder")).classes(
-                "w-96"
-            ).props(f"aria-label='{t(lang, 'or_path')}'").mark("path-input")
+                "flex-1"
+            ).props(f"outlined aria-label='{t(lang, 'or_path')}'").mark("path-input")
 
             def load_path() -> None:
                 raw = (path_input.value or "").strip().strip('"')
@@ -838,16 +1083,19 @@ def _render_upload(state: dict, lang: str, body) -> None:
                 _load_text(state, body, lang, text, Path(raw).name,
                            str(Path(raw).expanduser()))
 
-            ui.button(t(lang, "load"), on_click=load_path).props(
-                "outline color=indigo"
+            ui.button(t(lang, "load"), icon="folder_open",
+                      on_click=load_path).props(
+                "outline color=primary no-caps"
             ).mark("load-btn")
 
-        ui.label(t(lang, "paste_title")).classes("hx-tab-note mt-2")
-        with ui.column().classes("w-full max-w-3xl gap-2"):
+        with ui.column().classes("w-full gap-2"):
+            ui.label(t(lang, "paste_title")).classes("text-sm font-semibold").style(
+                "color:#1e293b"
+            )
             paste_area = ui.textarea(
                 placeholder=t(lang, "paste_placeholder")
             ).classes("w-full").props(
-                f"rows=6 aria-label='{t(lang, 'paste_placeholder')}'"
+                f"outlined rows=5 aria-label='{t(lang, 'paste_placeholder')}'"
             ).style("font-family:ui-monospace,monospace;font-size:12.5px").mark(
                 "paste-input"
             )
@@ -859,18 +1107,35 @@ def _render_upload(state: dict, lang: str, body) -> None:
                     return
                 _load_text(state, body, lang, raw + "\n", "pasted.bib")
 
-            ui.button(t(lang, "paste_import"), icon="input",
-                      on_click=import_paste).props(
-                "outline color=indigo"
-            ).mark("paste-load")
+            with ui.row().classes("w-full justify-end"):
+                ui.button(t(lang, "paste_import"), icon="input",
+                          on_click=import_paste).props(
+                    "unelevated color=primary no-caps"
+                ).mark("paste-load")
+
+    # ---- capability strip / secondary entrance ----
+    with ui.column().classes("w-full items-center gap-3 mt-5"):
+        pills = [
+            ("brush", t(lang, "tab_format")),
+            ("cleaning_services", t(lang, "tab_clean")),
+            ("auto_fix_high", t(lang, "tab_normalize")),
+            ("rule", t(lang, "tab_check")),
+            ("travel_explore", t(lang, "tab_verify")),
+        ]
+        inner = "".join(
+            f'<span class="hx-feature"><span class="material-icons" aria-hidden="true">'
+            f"{icon}</span>{_esc(label)}</span>"
+            for icon, label in pills
+        )
+        ui.html(f'<div class="hx-features">{inner}</div>')
 
         def browse_venues() -> None:
             state["venues_only"] = True
             body.refresh()
 
         ui.button(t(lang, "browse_venues"), on_click=browse_venues).props(
-            "flat dense"
-        ).style("color:#4338ca").mark("browse-venues")
+            "flat dense no-caps color=primary"
+        ).mark("browse-venues")
 
 
 def _render_venues_only(state: dict, lang: str, body) -> None:
@@ -885,13 +1150,12 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
 # LaTeX table formatter page (/table)
 # ---------------------------------------------------------------------------
 def _render_table_page(state: dict, lang: str, body) -> None:
-    with ui.card().classes("hx-card w-full p-6 gap-3"):
-        ui.label(t(lang, "table_paste_title")).classes("text-base font-bold")
-        ui.label(t(lang, "table_note")).classes("hx-tab-note")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("grid_on", t(lang, "table_paste_title"), t(lang, "table_note"))
         source = ui.textarea(
             placeholder=t(lang, "table_paste_placeholder"),
         ).classes("w-full").props(
-            f"outlined autogrow aria-label='{t(lang, 'table_paste_title')}'"
+            f"outlined rows=8 aria-label='{t(lang, 'table_paste_title')}'"
         ).style(
             "font-family:ui-monospace,monospace;font-size:12.5px"
         ).mark("table-input")
@@ -912,16 +1176,18 @@ def _render_table_page(state: dict, lang: str, body) -> None:
             state["result"] = (text, format_tables(text, opts))
             body.refresh()
 
-        with ui.row().classes("w-full items-center gap-4 flex-wrap"):
-            amp = ui.toggle(
-                {
-                    "space": t(lang, "table_amp_space"),
-                    "align": t(lang, "table_amp_align"),
-                    "none": t(lang, "table_amp_none"),
-                },
-                value=state["amp"],
-            ).props("no-caps unelevated inline").mark("table-amp")
-            amp.on_value_change(lambda e: state.update(amp=e.value or "space"))
+        with ui.element("div").classes("hx-optbar w-full"):
+            with ui.row().classes("items-center gap-3 no-wrap"):
+                ui.label(t(lang, "table_amp")).classes("hx-optlabel")
+                amp = ui.toggle(
+                    {
+                        "space": t(lang, "table_amp_space"),
+                        "align": t(lang, "table_amp_align"),
+                        "none": t(lang, "table_amp_none"),
+                    },
+                    value=state["amp"],
+                ).props("dense unelevated no-caps inline").mark("table-amp")
+                amp.on_value_change(lambda e: state.update(amp=e.value or "space"))
             blank = ui.switch(
                 t(lang, "table_blank"), value=state["blank_lines"],
             ).mark("table-blank")
@@ -929,7 +1195,7 @@ def _render_table_page(state: dict, lang: str, body) -> None:
             indent = ui.number(
                 t(lang, "table_indent_label"), value=state["row_indent"],
                 min=0, max=16, step=1,
-            ).classes("w-48").mark("table-indent")
+            ).classes("w-52").props("dense outlined").mark("table-indent")
             indent.on_value_change(
                 lambda e: state.update(row_indent=int(e.value or 0))
             )
@@ -940,14 +1206,18 @@ def _render_table_page(state: dict, lang: str, body) -> None:
 
         with ui.row().classes("w-full items-center gap-2"):
             ui.button(
-                t(lang, "table_example"), icon="article", on_click=load_example,
-            ).props("flat").mark("table-example")
-            ui.button(
-                t(lang, "table_format_btn"), icon="format_align_left",
-                on_click=run_format,
-            ).props("unelevated color=indigo").mark("table-format")
+                t(lang, "table_example"), icon="auto_awesome", on_click=load_example,
+            ).props("flat color=primary no-caps").mark("table-example")
+            ui.space()
+            ui.label("Ctrl + Enter").classes("hx-kbd")
+            fmt_button = ui.button(
+                t(lang, "table_format_btn"), icon="bolt", on_click=run_format,
+            ).props("unelevated color=primary no-caps").mark("table-format")
+            fmt_button.tooltip("Ctrl + Enter")
 
-    with ui.card().classes("hx-card w-full p-6 gap-3"):
+        source.on("keydown.ctrl.enter", run_format)
+
+    with ui.card().classes("hx-card w-full p-5 gap-3"):
         res = state["result"]
         if res is None:
             ui.html(
@@ -956,27 +1226,31 @@ def _render_table_page(state: dict, lang: str, body) -> None:
             return
         before, result = res
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
-            ui.html(
-                f'<span class="hx-chip" style="color:#1d4ed8;background:#1d4ed81a">'
-                f'{_esc(t(lang, "table_summary").format(tab=result.tables, rows=result.rows))}'
-                f'</span>'
-            )
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                ui.html(
+                    f'<span class="hx-chip" style="color:#4338ca;background:#4338ca1a">'
+                    f'{_esc(t(lang, "table_summary").format(tab=result.tables, rows=result.rows))}'
+                    f'</span>'
+                )
+                if result.tables and result.text == before:
+                    ui.html(
+                        f'<span class="hx-chip" style="color:#475569;background:#f1f5f9">'
+                        f'{_esc(t(lang, "table_unchanged"))}</span>'
+                    )
             with ui.row().classes("items-center gap-2"):
                 ui.button(
                     t(lang, "table_copy_result"), icon="content_copy",
                     on_click=_copy_handler(result.text, lang),
-                ).props("outline").mark("table-copy")
+                ).props("outline color=primary no-caps").mark("table-copy")
                 ui.button(
                     t(lang, "table_download"), icon="download",
                     on_click=lambda: ui.download(
                         result.text.encode("utf-8"), "tables.tex"
                     ),
-                ).props("outline").mark("table-download")
+                ).props("outline no-caps").mark("table-download")
         if result.tables == 0:
             ui.html(f'<div class="hx-empty">{_esc(t(lang, "table_no_tables"))}</div>')
         else:
-            if result.text == before and result.tables:
-                ui.label(t(lang, "table_unchanged")).classes("hx-tab-note")
             ui.html(table_diff_html(before, result.text, lang))
         if result.warnings:
             with ui.expansion(
@@ -1031,7 +1305,7 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
 
         _confirm(lang, t(lang, "close_title"), t(lang, "close_body"), close)
 
-    with ui.card().classes("hx-card hx-status w-full px-4 py-2 gap-1"):
+    with ui.card().classes("hx-card hx-status w-full px-4 py-3 gap-2"):
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             ui.icon("description", size="20px").style("color:#4338ca")
             ui.label(state["name"]).classes("font-semibold").mark("file-name")
@@ -1058,6 +1332,28 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
                 ui.label(t(lang, "same_as_original")).classes("hx-chip").style(
                     "background:#f1f5f9;color:#475569"
                 )
+
+        # clickable stage history: jump to any applied step (or the original)
+        with ui.row().classes("w-full items-center gap-1 flex-wrap"):
+            ui.icon("history", size="16px").style("color:#94a3b8;flex:none")
+
+            def jump(target: int) -> None:
+                _jump_stage(state, target)
+                body.refresh()
+
+            stage_labels = [(0, t(lang, "no_steps"))] + [
+                (i + 1, stage["label"]) for i, stage in enumerate(state["history"])
+            ]
+            for target, label in stage_labels:
+                cls = "hx-stage"
+                if state["pointer"] == target:
+                    cls += " hx-stage-active"
+                elif target > state["pointer"]:
+                    cls += " hx-stage-future"
+                ui.button(label, on_click=lambda tt=target: jump(tt)).props(
+                    "flat dense no-caps"
+                ).classes(cls).tooltip(t(lang, "stage_jump")).mark(f"stage-{target}")
+
         with ui.row().classes("w-full items-center gap-1 flex-wrap"):
             ui.button(t(lang, "undo"), icon="undo", on_click=do_undo).props(
                 "flat dense"
@@ -1164,7 +1460,7 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                     label: str = "") -> None:
     container.clear()
     with container:
-        with ui.card().classes("hx-card w-full p-4 gap-3"):
+        with ui.card().classes("hx-card w-full p-5 gap-3"):
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
                 ui.html(_summary_line(before, result_text, lang))
                 with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -1229,15 +1525,14 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                           on_click=download_result).props("outline")
                 ui.button(t(lang, "apply_btn"), icon="check",
                           on_click=apply_result).props(
-                    "unelevated color=indigo"
+                    "unelevated color=primary"
                 ).mark("apply-btn")
 
 
 # -- format -----------------------------------------------------------------
 def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-4 gap-3"):
-        ui.label(t(lang, "tab_format")).classes("font-bold text-lg")
-        ui.label(t(lang, "format_note")).classes("hx-tab-note")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("brush", t(lang, "tab_format"), t(lang, "format_note"))
         with ui.row().classes("gap-4 items-end flex-wrap"):
             indent = _bind(ui.select(
                 {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
@@ -1268,10 +1563,10 @@ def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
                                   state, "format", "drop_comments")
 
         ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        preview = _preview_area(lang)
         run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-            "unelevated color=indigo"
+            "unelevated color=primary"
         ).mark("format-preview")
+        preview = _preview_area(lang)
 
         async def run_format() -> None:
             opts = FormatOptions(
@@ -1282,13 +1577,13 @@ def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
                 trailing_comma=bool(trailing.value),
                 drop_comments=bool(drop_comments.value),
             )
-            run_button.disable()
+            _busy(run_button, True)
             try:
                 result = await asyncio.to_thread(
                     lambda: render_document(parse_bibtex(state["text"]), opts)
                 )
             finally:
-                run_button.enable()
+                _busy(run_button, False)
             _render_preview(preview, state, lang, state["text"], result,
                             refresh_body, opts=opts, label=t(lang, "tab_format"))
 
@@ -1299,9 +1594,8 @@ def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
 def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
     common = ["abstract", "keywords", "url", "doi", "isbn", "issn", "month",
               "note", "address", "editor", "publisher", "eprint", "volume", "number"]
-    with ui.card().classes("hx-card w-full p-4 gap-3"):
-        ui.label(t(lang, "tab_clean")).classes("font-bold text-lg")
-        ui.label(t(lang, "clean_note")).classes("hx-tab-note")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("cleaning_services", t(lang, "tab_clean"), t(lang, "clean_note"))
 
         ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
         remove_select = _bind(ui.select(
@@ -1350,10 +1644,10 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
                                  state, "clean", "dedupe_title")
 
         ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        preview = _preview_area(lang)
         run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-            "unelevated color=indigo"
+            "unelevated color=primary"
         ).mark("clean-preview")
+        preview = _preview_area(lang)
 
         def compute() -> str:
             work = parse_bibtex(state["text"])
@@ -1386,11 +1680,11 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
             return render_document(work, FormatOptions())
 
         async def run_clean() -> None:
-            run_button.disable()
+            _busy(run_button, True)
             try:
                 result = await asyncio.to_thread(compute)
             finally:
-                run_button.enable()
+                _busy(run_button, False)
             _render_preview(preview, state, lang, state["text"], result,
                             refresh_body, opts=FormatOptions(),
                             label=t(lang, "tab_clean"))
@@ -1400,9 +1694,8 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
 
 # -- normalize --------------------------------------------------------------
 def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-4 gap-3"):
-        ui.label(t(lang, "tab_normalize")).classes("font-bold text-lg")
-        ui.label(t(lang, "normalize_note")).classes("hx-tab-note")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("auto_fix_high", t(lang, "tab_normalize"), t(lang, "normalize_note"))
         with ui.row().classes("gap-6 items-start flex-wrap"):
             with ui.column().classes("gap-1"):
                 ui.label(t(lang, "venue_style")).classes("text-sm font-semibold")
@@ -1433,10 +1726,10 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
                                 state, "normalize", "add_arxiv_url")
 
         ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        preview = _preview_area(lang)
         run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-            "unelevated color=indigo"
+            "unelevated color=primary"
         ).mark("normalize-preview")
+        preview = _preview_area(lang)
 
         def compute() -> str:
             work = parse_bibtex(state["text"])
@@ -1450,11 +1743,11 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
             return render_document(work, FormatOptions())
 
         async def run_normalize() -> None:
-            run_button.disable()
+            _busy(run_button, True)
             try:
                 result = await asyncio.to_thread(compute)
             finally:
-                run_button.enable()
+                _busy(run_button, False)
             _render_preview(preview, state, lang, state["text"], result,
                             refresh_body, opts=FormatOptions(),
                             label=t(lang, "tab_normalize"))
@@ -1464,13 +1757,12 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
 
 # -- check ------------------------------------------------------------------
 def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-4 gap-3"):
-        ui.label(t(lang, "tab_check")).classes("font-bold text-lg")
-        ui.label(t(lang, "check_note")).classes("hx-tab-note")
-        result_area = ui.column().classes("w-full")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("rule", t(lang, "tab_check"), t(lang, "check_note"))
         run_button = ui.button(t(lang, "run_check"), icon="rule").props(
-            "unelevated color=indigo"
+            "unelevated color=primary"
         ).mark("run-check")
+        result_area = ui.column().classes("w-full")
 
         def render_report(report) -> None:
             result_area.clear()
@@ -1504,7 +1796,7 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                     ui.label(t(lang, "check_empty"))
 
         async def run_check() -> None:
-            run_button.disable()
+            _busy(run_button, True)
             try:
                 work = parse_bibtex(state["text"])
                 report = await asyncio.to_thread(
@@ -1514,7 +1806,7 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                 render_report(report)
             finally:
                 try:
-                    run_button.enable()
+                    _busy(run_button, False)
                 except Exception:  # noqa: BLE001 - rebuilt while running
                     pass
 
@@ -1523,9 +1815,8 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
 
 # -- verify -----------------------------------------------------------------
 def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-4 gap-3"):
-        ui.label(t(lang, "tab_verify")).classes("font-bold text-lg")
-        ui.label(t(lang, "verify_note")).classes("hx-tab-note")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("travel_explore", t(lang, "tab_verify"), t(lang, "verify_note"))
         with ui.row().classes("gap-4 items-end flex-wrap"):
             only = ui.input(t(lang, "only_keys")).classes("w-80")
             delay = _bind(ui.number(
@@ -1545,7 +1836,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
         progress_label = ui.label(t(lang, "state_idle")).classes("hx-tab-note")
         with ui.row().classes("items-center gap-2"):
             run_button = ui.button(t(lang, "start_verify"), icon="travel_explore").props(
-                "unelevated color=indigo"
+                "unelevated color=primary"
             ).mark("verify-start")
             pause_button = ui.button(t(lang, "pause"), icon="pause").props(
                 "outline"
@@ -1630,7 +1921,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
             }
             state["verify_results"] = None
             results_area.clear()
-            run_button.disable()
+            _busy(run_button, True)
             pause_button.enable()
             stop_button.enable()
             pause_button.set_text(t(lang, "pause"))
@@ -1656,7 +1947,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                 progress["paused"] = False
                 state["run_control"] = None
                 try:  # widgets may have been rebuilt (language switch) mid-run
-                    run_button.enable()
+                    _busy(run_button, False)
                     pause_button.disable()
                     stop_button.disable()
                     pause_button.set_text(t(lang, "pause"))
@@ -1765,9 +2056,8 @@ def _venue_card(venue, lang: str) -> None:
 
 
 def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-4 gap-3"):
-        ui.label(t(lang, "tab_venues")).classes("font-bold text-lg")
-        ui.label(t(lang, "venues_note")).classes("hx-tab-note")
+    with ui.card().classes("hx-card w-full p-5 gap-4"):
+        _panel_head("event", t(lang, "tab_venues"), t(lang, "venues_note"))
         with ui.row().classes("gap-3 items-end"):
             query = ui.input(t(lang, "search_venues")).classes("w-64").mark("venue-search")
             family = ui.select(["ALL", *families()], value="ALL",

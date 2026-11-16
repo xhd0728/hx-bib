@@ -20,6 +20,7 @@ hx-bib 是一个 BibTeX 整理工具箱：**格式化**、**清理**、**会议�
 - [修改预览：逐项对照 + 红绿 Diff](#修改预览逐项对照--红绿-diff)
 - [会议期刊分组规则](#会议期刊分组规则)
 - [引用核查的判定等级](#引用核查的判定等级)
+- [DeepSeek 搜索 / 抓取 MCP 工具](#deepseek-搜索--抓取-mcp-工具)
 - [开发与测试](#开发与测试)
 - [License](#license)
 
@@ -238,7 +239,7 @@ hx-bib gui --port 9000 --no-show
 - **会议期刊预设**：可搜索 / 按分组筛选，每条预设给出缩写 / 全称 / 归组三种写法，均可逐条复制；
 - **LaTeX 表格格式化页**：页头的「LaTeX 表格 →」进入独立页面——粘贴整篇 .tex 或表格片段，选择 `&` 风格 / 规则空行 / 行缩进后一键格式化，提供逐表红绿 Diff、提示列表和复制 / 下载 .tex；
 - **设置本地保存**：语言与所有面板选项自动保存在浏览器 `localStorage`，下次打开自动恢复；
-- 界面已通过 Lighthouse 审计（无障碍 / 最佳实践 / SEO 均为满分），主色与对比度满足 WCAG AA。
+- 界面已通过 Lighthouse 审计：两个页面性能 99、无障碍 / 最佳实践 / SEO 均满分（首帧以静态骨架镜像真实页面，websocket 连接前即可看到内容）；主色与对比度满足 WCAG AA。
 
 ## 修改预览：逐项对照 + 红绿 Diff + 逐条查看
 
@@ -275,6 +276,17 @@ GUI 中可在“仅看改动”和“查看全部”之间切换（CLI 加 `--dr
 
 作者对照会把 bib 中的作者列表与来源记录逐名比对（容忍 `and others` 截断、姓名缩写差异），HTML 报告中以红色标出对不上的名字；带 `and others` 截断的作者列表会单独给出提示。
 
+## DeepSeek 搜索 / 抓取 MCP 工具
+
+`tools/deepseek-mcp/` 提供一个**零依赖**（仅标准库）的 MCP 服务器，把 DeepSeek 官方 Web API 包装成两个工具：
+
+| 工具 | 用途 |
+| --- | --- |
+| `deepseek_search` | 联网搜索，支持 `site:` / `-site:` / `"精确短语"`；返回标题、URL、摘要、站点、日期、权威度（−1…4）与相关性分（0…3） |
+| `deepseek_fetch` | 抓取任意网页并转为 Markdown（标题 + 正文） |
+
+Key 从环境变量 `DEEPSEEK_API_KEY` 或 `server.py` 同目录的 `api_key.txt`（已被 git 忽略）读取。Claude Code / Claude Desktop / 其他 stdio 客户端的注册模板（含本机 conda 环境 `bib` 的示例）与手动测试命令见 [`tools/deepseek-mcp/README.md`](../tools/deepseek-mcp/README.md)。
+
 ## 开发与测试
 
 ```bash
@@ -284,7 +296,7 @@ pytest                                    # 单元 + 集成测试（152 项）
 PYTHONPATH=src python tests/gui_smoke.py  # GUI 无头冒烟测试（NiceGUI user simulation）
 ```
 
-前端使用 Lighthouse（headless Chrome）审计，无障碍 / 最佳实践 / SEO 均为 100，性能 99；如需复现：启动 `hx-bib gui --no-show` 后对页面跑 `npx lighthouse http://127.0.0.1:8080/`。
+前端使用 Lighthouse（headless Chrome）审计，主页面与表格页均性能 99、无障碍 / 最佳实践 / SEO 100；如需复现：启动 `hx-bib gui --no-show` 后对页面跑 `npx lighthouse http://127.0.0.1:8080/` 与 `http://127.0.0.1:8080/table`。
 
 项目结构：
 

@@ -7,6 +7,10 @@ from typing import Dict
 I18N: Dict[str, Dict[str, str]] = {
     "zh": {
         "subtitle": "BibTeX 整理 · 校验 · 引用核查",
+        "nav_tools": "BibTeX 工具",
+        "hero_badge": "完全在本地运行 · 文件不会上传",
+        "or_divider": "或者",
+        "stage_jump": "跳到这一步",
         # upload
         "upload_title": "上传 BibTeX 文件",
         "upload_hint": "拖拽或选择 .bib 文件，也可以直接输入本地路径",
@@ -138,6 +142,9 @@ I18N: Dict[str, Dict[str, str]] = {
         "sev_error": "错误",
         "sev_warning": "警告",
         "sev_info": "建议",
+        "sev_error_n": "{0} 个错误",
+        "sev_warning_n": "{0} 个警告",
+        "sev_info_n": "{0} 条建议",
         "download_json": "下载 JSON 报告",
         # verify
         "verify_note": "联网核对标题 / 作者 / 年份与 arXiv、Crossref、DBLP、OpenReview 记录是否一致，并检测 arXiv 是否已被录用。",
@@ -201,6 +208,10 @@ I18N: Dict[str, Dict[str, str]] = {
     },
     "en": {
         "subtitle": "BibTeX tidy · validate · verify",
+        "nav_tools": "BibTeX tools",
+        "hero_badge": "Runs entirely on your machine — nothing is uploaded",
+        "or_divider": "or",
+        "stage_jump": "Jump to this step",
         # upload
         "upload_title": "Upload a BibTeX file",
         "upload_hint": "Drag & drop a .bib file, or enter a local path",
@@ -332,6 +343,9 @@ I18N: Dict[str, Dict[str, str]] = {
         "sev_error": "error",
         "sev_warning": "warning",
         "sev_info": "suggestion",
+        "sev_error_n": "{0} error(s)",
+        "sev_warning_n": "{0} warning(s)",
+        "sev_info_n": "{0} suggestion(s)",
         "download_json": "Download JSON report",
         # verify
         "verify_note": "Check title / authors / year against arXiv, Crossref, DBLP and OpenReview — and whether an arXiv preprint has been accepted.",

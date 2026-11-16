@@ -104,7 +104,7 @@ The GUI goes one step further: three preview views (**itemized**, **side-by-side
 
 ## GUI workflow
 
-All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step you can undo / redo / reorder-free, and the status bar always shows how far the working copy has drifted from the original file. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse (accessibility / best practices / SEO at 100).
+All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the sticky status bar — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both pages score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
 
 ## Venue families
 
@@ -120,6 +120,17 @@ Presets cover the common CS/AI conferences and journals. Grouping rules:
 ## Verification verdicts
 
 Each entry is classified as **OK** (title/authors/year confirmed) · **INFO** (cannot be verified — no source covers it) · **MINOR / WARN** (small differences) · **FAIL** (suspect / not found). `hx-bib verify` exits non-zero when anything is `FAIL`; results are cached politely on disk and can be exported as a filterable HTML report.
+
+## DeepSeek search / fetch MCP tool
+
+`tools/deepseek-mcp/` ships a zero-dependency MCP server (stdlib only) that wraps DeepSeek's official web APIs as two tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `deepseek_search` | Web search with `site:` / `-site:` / `"exact phrase"` syntax; returns title, URL, snippet, site, date, authority (−1…4) and relevance (0…3) |
+| `deepseek_fetch` | Fetch any web page and return it as Markdown (title + body) |
+
+It reads the API key from `DEEPSEEK_API_KEY` or an `api_key.txt` next to `server.py` (git-ignored). Registration templates for Claude Code / Claude Desktop / other stdio clients and a one-liner manual test live in [`tools/deepseek-mcp/README.md`](tools/deepseek-mcp/README.md).
 
 ## Development
 
