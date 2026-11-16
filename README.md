@@ -3,8 +3,8 @@
 A tidy toolbox for BibTeX files: **format**, **clean**, **normalize venues**, **validate** and **verify citations**.
 
 - **CLI** (Typer + Rich) — pretty output, scriptable, CI-friendly, with itemized + GitHub-style side-by-side diff previews (`--dry-run`).
-- **GUI** (NiceGUI, local web) — upload a `.bib` file and work through one feature per tab, with live before/after diffs and a 中文 / English switch.
-- **Multi-source verification** — checks each entry against arXiv, Crossref, DBLP and OpenReview to catch hallucinated references.
+- **GUI** (NiceGUI, local web) — a single working copy shared by all tabs: every action is previewed first, then staged with undo / redo / reset, and the final text is one click away (copy all, download, per-entry copy).
+- **Multi-source verification** — checks each entry against arXiv, Crossref, DBLP and OpenReview to catch hallucinated references, with concurrent workers, pause / stop, on-disk caching and arXiv-accepted detection.
 
 中文文档（更完整）：[docs/README.zh.md](docs/README.zh.md)
 
@@ -28,15 +28,16 @@ hx-bib format refs.bib --indent 2 --field-order standard --sort key
 # Preview instead of writing: itemized changes + red/green side-by-side diff
 hx-bib format refs.bib --dry-run
 
-# Clean: drop fields, strip 'and others', normalize months, dedupe keys
-hx-bib clean refs.bib -r abstract -r keywords --drop-others --months --dedupe
+# Clean: drop fields, strip 'and others', normalize months/DOIs/pages/URLs, dedupe
+hx-bib clean refs.bib -r abstract -r keywords --drop-others --months --dedupe \
+    --doi --pages --clean-urls --dedupe-title
 
 # Normalize venues and arXiv entries
 hx-bib normalize refs.bib --venue-style family --arxiv-style journal
 
-# Offline structural check, then online verification
+# Offline structural check, then online verification (4 concurrent workers)
 hx-bib check refs.bib --strict
-hx-bib verify refs.bib --html report.html --json report.json
+hx-bib verify refs.bib --workers 4 --html report.html --json report.json
 
 # Browse the built-in venue presets
 hx-bib venues list --family ACM
@@ -51,10 +52,10 @@ hx-bib gui
 | Command | What it does |
 | --- | --- |
 | `format` | Consistent indentation (`2/4/tab/align`), field order (`standard/alphabetical/keep`), entry sorting, `=` alignment, trailing commas. |
-| `clean` | Remove / keep / add / rename fields, drop empty fields, strip `and others`, month macros (`jan…dec`), trailing title periods, duplicate cite keys. |
+| `clean` | Remove / keep / add / rename fields, drop empty fields, strip `and others`, month macros (`jan…dec`), trailing title periods, duplicate cite keys. Advanced: normalize DOIs, unify page ranges (`12--34`), strip URL tracking parameters (`utm_*`, `fbclid`…), dedupe by title. |
 | `normalize` | Canonical venue names (`abbr / full / family / keep`) and arXiv entries (`journal / misc / keep`), entry-type fixes. |
 | `check` | Offline validation: required fields, year/pages shapes, unbalanced braces, duplicate keys, placeholder venues, style traps. |
-| `verify` | Network verification against arXiv, Crossref, DBLP, OpenReview; HTML/JSON reports. |
+| `verify` | Network verification against arXiv, Crossref, DBLP, OpenReview (`--workers N` for concurrency); HTML/JSON reports; flags arXiv preprints that have since been accepted. |
 | `venues` | `list` / `search` the built-in conference & journal presets. |
 | `gui` | Local NiceGUI app (`--port`, `--host`, `--show`). |
 
@@ -67,7 +68,11 @@ With `--dry-run` (and after every action in the GUI) you get two views of the sa
 - an **itemized list** — per entry, which fields were added (`+`), removed (`−`) or modified (`~`);
 - a **side-by-side red/green line diff** like GitHub, with before/after line numbers.
 
-The GUI can toggle between **all entries** and **changes only**.
+The GUI goes one step further: three preview views (**itemized**, **side-by-side diff**, **per entry** — each entry card has its own copy button), a **show all / changes only** toggle, and a staging history — apply a change, preview the next one on top of it, undo / redo / reset at any time, then copy or download the final text.
+
+## GUI workflow
+
+All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step you can undo / redo / reorder-free, and the status bar always shows how far the working copy has drifted from the original file. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse (accessibility / best practices / SEO at 100).
 
 ## Venue families
 

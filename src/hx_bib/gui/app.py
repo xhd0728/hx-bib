@@ -202,6 +202,7 @@ def _new_state() -> dict:
         "pointer": 0,       # number of applied stages (index into history tail)
         "verify_results": None,
         "verify_filter": "ALL",
+        "check_report": None,
         "progress": {"done": 0, "total": 0, "key": "", "running": False, "paused": False},
         "run_control": None,
         "tab": "format",
@@ -217,6 +218,7 @@ def _push_stage(state: dict, label: str, text: str) -> None:
     state["history"] = history
     state["pointer"] = len(history)
     state["text"] = text
+    state["check_report"] = None  # stale against the new text
 
 
 def _jump_stage(state: dict, pointer: int) -> None:
@@ -225,6 +227,7 @@ def _jump_stage(state: dict, pointer: int) -> None:
         state["history"][state["pointer"] - 1]["text"]
         if state["pointer"] else state["baseline"]
     )
+    state["check_report"] = None
 
 
 def _changed_count(before: str, after: str) -> Optional[int]:
@@ -567,7 +570,7 @@ def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "
     doc = parse_bibtex(text)
     state.update(
         text=text, baseline=text, name=name, path=path,
-        history=[], pointer=0, verify_results=None, tab="format",
+        history=[], pointer=0, verify_results=None, check_report=None, tab="format",
         venues_only=False,
     )
     body.refresh()
@@ -1120,12 +1123,40 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
         ui.label(t(lang, "tab_check")).classes("font-bold text-lg")
         ui.label(t(lang, "check_note")).classes("hx-tab-note")
         result_area = ui.column().classes("w-full")
-        with result_area:
-            with ui.element("div").classes("hx-empty"):
-                ui.label(t(lang, "check_empty"))
         run_button = ui.button(t(lang, "run_check"), icon="rule").props(
             "unelevated color=indigo"
         ).mark("run-check")
+
+        def render_report(report) -> None:
+            result_area.clear()
+            with result_area:
+                ui.html(check_html(report, lang))
+                if report.issues:
+                    def download_json() -> None:
+                        payload = {
+                            "tool": "hx-bib",
+                            "issues": [
+                                {"severity": i.severity, "key": i.key,
+                                 "field": i.field_name, "line": i.line,
+                                 "message": i.message}
+                                for i in report.sorted()
+                            ],
+                        }
+                        ui.download(
+                            json.dumps(payload, indent=2, ensure_ascii=False)
+                            .encode("utf-8"),
+                            f"{Path(state['name']).stem or 'bibliography'}.check.json",
+                        )
+
+                    ui.button(t(lang, "download_json"), icon="download",
+                              on_click=download_json).props("outline")
+
+        if state.get("check_report") is not None:
+            render_report(state["check_report"])
+        else:
+            with result_area:
+                with ui.element("div").classes("hx-empty"):
+                    ui.label(t(lang, "check_empty"))
 
         async def run_check() -> None:
             run_button.disable()
@@ -1134,30 +1165,13 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                 report = await asyncio.to_thread(
                     lambda: validate_document(work, ValidateOptions())
                 )
+                state["check_report"] = report
+                render_report(report)
             finally:
-                run_button.enable()
-            result_area.clear()
-            with result_area:
-                ui.html(check_html(report, lang))
-
-            if report.issues:
-                def download_json() -> None:
-                    payload = {
-                        "tool": "hx-bib",
-                        "issues": [
-                            {"severity": i.severity, "key": i.key,
-                             "field": i.field_name, "line": i.line,
-                             "message": i.message}
-                            for i in report.sorted()
-                        ],
-                    }
-                    ui.download(
-                        json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"),
-                        f"{Path(state['name']).stem or 'bibliography'}.check.json",
-                    )
-
-                ui.button(t(lang, "download_json"), icon="download",
-                          on_click=download_json).props("outline")
+                try:
+                    run_button.enable()
+                except Exception:  # noqa: BLE001 - rebuilt while running
+                    pass
 
         run_button.on_click(run_check)
 
@@ -1296,10 +1310,13 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                 progress["running"] = False
                 progress["paused"] = False
                 state["run_control"] = None
-                run_button.enable()
-                pause_button.disable()
-                stop_button.disable()
-                pause_button.set_text(t(lang, "pause"))
+                try:  # widgets may have been rebuilt (language switch) mid-run
+                    run_button.enable()
+                    pause_button.disable()
+                    stop_button.disable()
+                    pause_button.set_text(t(lang, "pause"))
+                except Exception:  # noqa: BLE001
+                    pass
 
             state["verify_results"] = results
             state["verify_filter"] = "ALL"
@@ -1318,7 +1335,13 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                     ),
                     type=color, position="top",
                 )
-            show_results()
+            show_results_safe()
+
+        def show_results_safe() -> None:
+            try:
+                show_results()
+            except Exception:  # noqa: BLE001 - panel rebuilt mid-run; rebuild again
+                refresh_body.refresh()
 
         run_button.on_click(run_verify)
 
