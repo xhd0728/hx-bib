@@ -202,6 +202,9 @@ def _parse_fields(rest: str, entry: Entry) -> None:
 
         parts: List[str] = []
         bare = True
+        has_macro = False
+        value_start = i
+        value_end = i
         while True:
             while i < n and rest[i] in " \t\r\n":
                 i += 1
@@ -226,7 +229,9 @@ def _parse_fields(rest: str, entry: Entry) -> None:
                     j += 1
                 token = rest[i:j].strip()
                 parts.append(token)
+                has_macro = True
                 i = j
+            value_end = i
             # After a value part: another '#' continues, ',' ends the field.
             k = i
             while k < n and rest[k] in " \t\r\n":
@@ -238,8 +243,14 @@ def _parse_fields(rest: str, entry: Entry) -> None:
             break
 
         if name:
-            entry.fields[name] = "".join(parts).strip()
-            if bare:
+            # Keep expressions involving unresolved macros as BibTeX source.
+            # Joining their token text would silently turn `prefix # " text"`
+            # into a literal string, changing the resulting bibliography.
+            expression = len(parts) > 1 and has_macro
+            entry.fields[name] = (rest[value_start:value_end].strip() if expression
+                                  else "".join(parts).strip())
+            entry.bare_fields.discard(name)
+            if bare or expression:
                 entry.bare_fields.add(name)
         # Skip the comma after the field (if any).
         while i < n and rest[i] in " \t\r\n,":

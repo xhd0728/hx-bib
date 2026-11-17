@@ -14,6 +14,25 @@ SRC = """@article{key,
 """
 
 
+@pytest.mark.parametrize("expression", [
+    'prefix # " suffix"', 'prefix # suffix', '{A } # venue # " paper"',
+    'prefix # " multi\nline"',
+])
+def test_format_preserves_unresolved_macro_concatenation(expression):
+    source = '@string{prefix = "Example"}\n@article{key, title = ' + expression + '}'
+    result = format_text(source)
+    assert "title = " + expression in result
+    assert format_text(result) == result
+    entry = parse_bibtex(result).entries[0]
+    assert entry.get("title") == expression and "title" in entry.bare_fields
+
+
+def test_repeated_field_uses_last_value_quoting():
+    entry = parse_bibtex('@article{key,title=macro,title="Literal"}').entries[0]
+    assert "title" not in entry.bare_fields
+    assert "title = {Literal}" in render_entry(entry, FormatOptions())
+
+
 def _entry(text=SRC):
     return parse_bibtex(text).entries[0]
 
