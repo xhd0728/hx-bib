@@ -7,7 +7,7 @@ name = "hx-bib"
 version = "0.1.0"
 description = "A tidy toolbox for BibTeX: format, clean, normalize venues, validate and verify citations."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "qysys" }]
 keywords = ["bibtex", "citation", "latex", "reference", "hallucination"]
@@ -20,7 +20,7 @@ classifiers = [
 dependencies = [
     "typer>=0.9",
     "rich>=13.0",
-    "nicegui>=1.4",
+    "nicegui>=4.0,<5",
 ]
 
 [project.optional-dependencies]
