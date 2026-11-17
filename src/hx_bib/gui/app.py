@@ -73,23 +73,11 @@ VERDICT_COLOR = {
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
 
-DEFAULT_SETTINGS: dict = {
-    "lang": "zh",
-    "format": {
-        "indent": "4", "field_order": "standard", "sort": "none",
-        "align_equals": False, "trailing_comma": False, "drop_comments": False,
-    },
-    "clean": {
-        "remove": [], "drop_empty": False, "drop_others": False, "months": False,
-        "title_period": False, "dedupe": False, "keep_last": False,
-        "doi": False, "pages": False, "clean_urls": False, "dedupe_title": False,
-    },
-    "normalize": {
-        "venue_style": "abbr", "arxiv_style": "journal", "fix_types": True,
-        "drop_arxiv_volume": True, "add_arxiv_url": True,
-    },
-    "verify": {"delay": 0.8, "workers": 1, "use_cache": True},
-}
+from .workspace import (
+    DEFAULT_SETTINGS, invalidate_results, jump_stage as _jump_stage,
+    merge_settings as _merge_settings, new_state as _new_state,
+    preview_is_current, push_stage as _push_stage,
+)
 
 CSS = """
 :root { --hx-ink:#0f172a; --hx-body:#334155; --hx-muted:#5b6577; --hx-line:#e6e8f0;
@@ -502,18 +490,6 @@ def _head_html(description: str) -> str:
 # ---------------------------------------------------------------------------
 # Settings persistence
 # ---------------------------------------------------------------------------
-def _merge_settings(base: dict, incoming: object) -> dict:
-    if not isinstance(incoming, dict):
-        return base
-    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}
-    for key, value in incoming.items():
-        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
-            out[key] = _merge_settings(out[key], value)
-        elif key in out:
-            out[key] = value
-    return out
-
-
 def _set_setting(state: dict, path: str, key: str, value) -> None:
     node = state["settings"].setdefault(path, {})
     if isinstance(node, dict):
@@ -540,53 +516,6 @@ def _opt(state: dict, path: str, key: str):
 # ---------------------------------------------------------------------------
 # Working copy + staging history
 # ---------------------------------------------------------------------------
-def _new_state() -> dict:
-    return {
-        "lang": "zh",
-        "mode": "tools",    # tools | table — switched in-page, no reload
-        "text": "",
-        "baseline": "",
-        "name": "",
-        "path": "",
-        "history": [],      # [{"label": str, "text": str}]
-        "pointer": 0,       # number of applied stages (index into history tail)
-        "verify_results": None,
-        "verify_filter": "ALL",
-        "check_report": None,
-        "check_filter": "ALL",
-        "progress": {"done": 0, "total": 0, "key": "", "running": False, "paused": False},
-        "run_control": None,
-        "tab": "format",
-        "venues_only": False,
-        # LaTeX table formatter (own inputs, independent of the working copy)
-        "source_text": "",
-        "amp": "space",
-        "blank_lines": True,
-        "row_indent": 0,
-        "result": None,     # (before_text, TableFormatResult)
-        "settings": _merge_settings(DEFAULT_SETTINGS, {}),
-        "settings_dirty": False,
-    }
-
-
-def _push_stage(state: dict, label: str, text: str) -> None:
-    history = state["history"][: state["pointer"]]
-    history.append({"label": label, "text": text})
-    state["history"] = history
-    state["pointer"] = len(history)
-    state["text"] = text
-    state["check_report"] = None  # stale against the new text
-
-
-def _jump_stage(state: dict, pointer: int) -> None:
-    state["pointer"] = max(0, min(pointer, len(state["history"])))
-    state["text"] = (
-        state["history"][state["pointer"] - 1]["text"]
-        if state["pointer"] else state["baseline"]
-    )
-    state["check_report"] = None
-
-
 def _changed_count(before: str, after: str) -> Optional[int]:
     try:
         return len(diff_documents(parse_bibtex(before), parse_bibtex(after)).changed)
@@ -1012,7 +941,7 @@ def verify_html(results, verdict_filter: str, lang: str) -> str:
 # ---------------------------------------------------------------------------
 def _read_file_bytes(data: bytes) -> str:
     try:
-        return data.decode("utf-8")
+        return data.decode("utf-8-sig")
     except UnicodeDecodeError:
         return data.decode("latin-1")
 
@@ -1059,6 +988,41 @@ def _busy(button, busy: bool) -> None:
             button.props(remove="loading")
     except Exception:  # noqa: BLE001 - widget may have been rebuilt
         pass
+
+
+async def _run_preview_job(button, container, state: dict, lang: str,
+                           key: str, compute: Callable, refresh_body,
+                           opts: FormatOptions, label: str) -> None:
+    """Compute from an immutable source; a newer document/job always wins."""
+    before, revision = state["text"], state["revision"]
+    token = object()
+    state["preview_jobs"][key] = token
+    _busy(button, True)
+    try:
+        result = await asyncio.to_thread(compute, before)
+    except Exception as exc:  # surface failures without losing the working copy
+        ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
+        return
+    finally:
+        _busy(button, False)
+    if not preview_is_current(state, revision, before):
+        return
+    if state["preview_jobs"].get(key) is not token:
+        return
+    state["previews"][key] = {
+        "before": before, "result_text": result, "opts": opts, "label": label,
+        "revision": revision,
+    }
+    if not container.is_deleted:
+        _render_preview(container, state, lang, before, result, refresh_body,
+                        opts=opts, label=label, revision=revision)
+
+
+def _draft(widget, state: dict, key: str, default=""):
+    """Keep unfinished input in memory across mode/language/history refreshes."""
+    widget.value = state["drafts"].get(key, default)
+    widget.on_value_change(lambda e: state["drafts"].update({key: e.value}))
+    return widget
 
 
 def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> None:
@@ -1317,6 +1281,10 @@ def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> Non
 # ---------------------------------------------------------------------------
 def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "") -> None:
     doc = parse_bibtex(text)
+    if not doc.entries and not doc.strings and not doc.preamble:
+        ui.notify(t(lang, "invalid_bib"), type="warning", position="top")
+        return
+    invalidate_results(state)
     state.update(
         text=text, baseline=text, name=name, path=path,
         history=[], pointer=0, verify_results=None, check_report=None, tab="format",
@@ -1362,6 +1330,7 @@ def _render_upload(state: dict, lang: str, body) -> None:
             path_input = ui.input(placeholder=t(lang, "path_placeholder")).classes(
                 "flex-1"
             ).props(f"outlined aria-label='{t(lang, 'or_path')}'").mark("path-input")
+            _draft(path_input, state, "import_path")
 
             def load_path() -> None:
                 raw = (path_input.value or "").strip().strip('"')
@@ -1369,9 +1338,7 @@ def _render_upload(state: dict, lang: str, body) -> None:
                     ui.notify(t(lang, "or_path"), type="warning", position="top")
                     return
                 try:
-                    text = Path(raw).expanduser().read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    text = Path(raw).expanduser().read_text(encoding="latin-1")
+                    text = _read_file_bytes(Path(raw).expanduser().read_bytes())
                 except OSError as exc:
                     ui.notify(str(exc), type="negative", position="top")
                     return
@@ -1382,6 +1349,7 @@ def _render_upload(state: dict, lang: str, body) -> None:
                       on_click=load_path).props(
                 "outline color=primary no-caps"
             ).mark("load-btn")
+            path_input.on("keydown.enter", load_path)
 
         with ui.column().classes("w-full gap-2"):
             ui.label(t(lang, "paste_title")).classes("text-sm font-semibold").style(
@@ -1394,6 +1362,7 @@ def _render_upload(state: dict, lang: str, body) -> None:
             ).style("font-family:ui-monospace,monospace;font-size:12.5px").mark(
                 "paste-input"
             )
+            _draft(paste_area, state, "import_text")
 
             def import_paste() -> None:
                 raw = (paste_area.value or "").strip()
@@ -1602,11 +1571,9 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
 
     def do_close() -> None:
         def close() -> None:
-            fresh = _new_state()
-            fresh["settings"] = state["settings"]
-            fresh["lang"] = state["lang"]
-            state.clear()
-            state.update(fresh)
+            invalidate_results(state)
+            state.update(text="", baseline="", name="", path="", history=[],
+                         pointer=0, tab="format", venues_only=False)
             body.refresh()
 
         _confirm(lang, t(lang, "close_title"), t(lang, "close_body"), close)
@@ -1716,8 +1683,14 @@ def _build_panel(key: str, state: dict, lang: str, doc, refresh_body: Callable) 
     builders[key](state, lang, doc, refresh_body)
 
 
-def _preview_area(lang: str) -> ui.column:
+def _preview_area(lang: str, state: dict, key: str, refresh_body) -> ui.column:
     col = ui.column().classes("w-full gap-2")
+    saved = state["previews"].get(key)
+    if saved and preview_is_current(state, saved["revision"], saved["before"]):
+        _render_preview(col, state, lang, saved["before"], saved["result_text"],
+                        refresh_body, opts=saved["opts"], label=saved["label"],
+                        revision=saved["revision"])
+        return col
     with col:
         with ui.element("div").classes("hx-empty"):
             ui.label(t(lang, "empty_preview"))
@@ -1763,7 +1736,8 @@ def _render_entry_cards(container: ui.column, result_text: str,
 def _render_preview(container: ui.column, state: dict, lang: str,
                     before: str, result_text: str, refresh_body=None,
                     opts: Optional[FormatOptions] = None,
-                    label: str = "") -> None:
+                    label: str = "", revision: Optional[int] = None) -> None:
+    revision = state["revision"] if revision is None else revision
     container.clear()
     with container:
         with ui.card().classes("hx-card w-full p-5 gap-3"):
@@ -1821,7 +1795,11 @@ def _render_preview(container: ui.column, state: dict, lang: str,
 
             with ui.row().classes("w-full justify-end gap-2 flex-wrap"):
                 def apply_result() -> None:
-                    _push_stage(state, label or t(lang, "applied"), result_text)
+                    if not preview_is_current(state, revision, before):
+                        ui.notify(t(lang, "stale_preview"), type="warning")
+                        return
+                    if not _push_stage(state, label or t(lang, "applied"), result_text):
+                        return
                     ui.notify(
                         t(lang, "step_applied").format(n=state["pointer"], label=label),
                         type="positive", position="top",
@@ -1841,7 +1819,7 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                 ui.button(t(lang, "apply_btn"), icon="check",
                           on_click=apply_result).props(
                     "unelevated color=primary"
-                ).mark("apply-btn")
+                ).mark("apply-btn").set_enabled(result_text != before)
 
 
 # -- format -----------------------------------------------------------------
@@ -1882,7 +1860,7 @@ def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
         run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
             "unelevated color=primary"
         ).mark("format-preview")
-        preview = _preview_area(lang)
+        preview = _preview_area(lang, state, "format", refresh_body)
 
         async def run_format() -> None:
             opts = FormatOptions(
@@ -1893,15 +1871,11 @@ def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
                 trailing_comma=bool(trailing.value),
                 drop_comments=bool(drop_comments.value),
             )
-            _busy(run_button, True)
-            try:
-                result = await asyncio.to_thread(
-                    lambda: render_document(parse_bibtex(state["text"]), opts)
-                )
-            finally:
-                _busy(run_button, False)
-            _render_preview(preview, state, lang, state["text"], result,
-                            refresh_body, opts=opts, label=t(lang, "tab_format"))
+            await _run_preview_job(
+                run_button, preview, state, lang, "format",
+                lambda before: render_document(parse_bibtex(before), opts),
+                refresh_body, opts, t(lang, "tab_format"),
+            )
 
         run_button.on_click(run_format)
 
@@ -1925,6 +1899,9 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
             add_key = ui.input(t(lang, "add_key")).classes("w-44")
             add_value = ui.input(t(lang, "add_value")).classes("w-72")
             overwrite = ui.switch(t(lang, "overwrite"))
+            for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
+                                ("add_value", add_value), ("overwrite", overwrite)):
+                _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
         with ui.row().classes("gap-6 flex-wrap mt-1"):
             drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
                                          value=bool(_opt(state, "clean", "drop_empty"))),
@@ -1964,47 +1941,55 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
         run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
             "unelevated color=primary"
         ).mark("clean-preview")
-        preview = _preview_area(lang)
+        preview = _preview_area(lang, state, "clean", refresh_body)
 
-        def compute() -> str:
-            work = parse_bibtex(state["text"])
-            names = list(remove_select.value or [])
-            if custom_remove.value:
-                names += [n.strip() for n in re.split(r"[,\s]+", custom_remove.value) if n.strip()]
+        def compute(before: str, values: dict) -> str:
+            work = parse_bibtex(before)
+            names = list(values["remove_select"] or [])
+            if values["custom_remove"]:
+                names += [n.strip() for n in re.split(r"[,\s]+", values["custom_remove"]) if n.strip()]
             if names:
                 cleaner.remove_fields(work, names)
-            if add_key.value and add_value.value:
-                cleaner.add_fields(work, {add_key.value: add_value.value},
-                                   overwrite=bool(overwrite.value))
-            if drop_empty.value:
+            if values["add_key"] and values["add_value"]:
+                cleaner.add_fields(work, {values["add_key"].strip(): values["add_value"]},
+                                   overwrite=bool(values["overwrite"]))
+            if values["drop_empty"]:
                 cleaner.drop_empty_fields(work)
-            if drop_others.value:
+            if values["drop_others"]:
                 cleaner.drop_others(work)
-            if months.value:
+            if values["months"]:
                 cleaner.normalize_months(work)
-            if title_period.value:
+            if values["title_period"]:
                 cleaner.strip_title_periods(work)
-            if doi.value:
+            if values["doi"]:
                 cleaner.normalize_dois(work)
-            if pages.value:
+            if values["pages"]:
                 cleaner.unify_page_ranges(work)
-            if clean_urls.value:
+            if values["clean_urls"]:
                 cleaner.strip_url_tracking(work)
-            if dedupe.value:
-                cleaner.dedupe_entries(work, keep="last" if keep_last.value else "first")
-            if dedupe_title.value:
-                cleaner.dedupe_by_title(work, keep="last" if keep_last.value else "first")
+            if values["dedupe"]:
+                cleaner.dedupe_entries(work, keep="last" if values["keep_last"] else "first")
+            if values["dedupe_title"]:
+                cleaner.dedupe_by_title(work, keep="last" if values["keep_last"] else "first")
             return render_document(work, FormatOptions())
 
         async def run_clean() -> None:
-            _busy(run_button, True)
-            try:
-                result = await asyncio.to_thread(compute)
-            finally:
-                _busy(run_button, False)
-            _render_preview(preview, state, lang, state["text"], result,
-                            refresh_body, opts=FormatOptions(),
-                            label=t(lang, "tab_clean"))
+            values = {key: widget.value for key, widget in {
+                "remove_select": remove_select, "custom_remove": custom_remove,
+                "add_key": add_key, "add_value": add_value, "overwrite": overwrite,
+                "drop_empty": drop_empty, "drop_others": drop_others, "months": months,
+                "title_period": title_period, "doi": doi, "pages": pages,
+                "clean_urls": clean_urls, "dedupe": dedupe, "keep_last": keep_last,
+                "dedupe_title": dedupe_title,
+            }.items()}
+            if bool((values["add_key"] or "").strip()) != bool(values["add_value"]):
+                ui.notify(t(lang, "incomplete_field"), type="warning")
+                return
+            await _run_preview_job(
+                run_button, preview, state, lang, "clean",
+                lambda before: compute(before, values), refresh_body,
+                FormatOptions(), t(lang, "tab_clean"),
+            )
 
         run_button.on_click(run_clean)
 
@@ -2079,28 +2064,25 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
         run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
             "unelevated color=primary"
         ).mark("normalize-preview")
-        preview = _preview_area(lang)
+        preview = _preview_area(lang, state, "normalize", refresh_body)
 
-        def compute() -> str:
-            work = parse_bibtex(state["text"])
-            normalize_document(work, NormalizeOptions(
+        async def run_normalize() -> None:
+            options = NormalizeOptions(
                 venue_style=venue_style.value or "abbr",
                 arxiv_style=arxiv_style.value or "journal",
                 fix_entry_types=bool(fix_types.value),
                 drop_arxiv_volume=bool(drop_volume.value),
                 add_arxiv_url=bool(add_url.value),
-            ))
-            return render_document(work, FormatOptions())
+            )
 
-        async def run_normalize() -> None:
-            _busy(run_button, True)
-            try:
-                result = await asyncio.to_thread(compute)
-            finally:
-                _busy(run_button, False)
-            _render_preview(preview, state, lang, state["text"], result,
-                            refresh_body, opts=FormatOptions(),
-                            label=t(lang, "tab_normalize"))
+            def compute(before: str) -> str:
+                work = parse_bibtex(before)
+                normalize_document(work, options)
+                return render_document(work, FormatOptions())
+
+            await _run_preview_job(run_button, preview, state, lang, "normalize",
+                                   compute, refresh_body, FormatOptions(),
+                                   t(lang, "tab_normalize"))
 
         run_button.on_click(run_normalize)
 
@@ -2179,14 +2161,19 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                     ui.label(t(lang, "check_empty"))
 
         async def run_check() -> None:
+            before, revision = state["text"], state["revision"]
             _busy(run_button, True)
             try:
-                work = parse_bibtex(state["text"])
+                work = parse_bibtex(before)
                 report = await asyncio.to_thread(
                     lambda: validate_document(work, ValidateOptions())
                 )
-                state["check_report"] = report
-                render_report(report)
+                if preview_is_current(state, revision, before):
+                    state["check_report"] = report
+                    if not result_area.is_deleted:
+                        render_report(report)
+            except Exception as exc:
+                ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
             finally:
                 try:
                     _busy(run_button, False)
@@ -2203,9 +2190,10 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
         ui.html(_steps_html(lang, ["steps_verify_run", "steps_verify_review",
                                    "steps_verify_result"]))
         with ui.row().classes("gap-4 items-end flex-wrap"):
-            only = ui.input(t(lang, "only_keys")).classes("w-80")
+            only = _draft(ui.input(t(lang, "only_keys")).classes("w-80"),
+                          state, "verify_keys")
             delay = _bind(ui.number(
-                t(lang, "delay"), value=float(_opt(state, "verify", "delay") or 0.8),
+                t(lang, "delay"), value=float(_opt(state, "verify", "delay")),
                 min=0.0, step=0.1,
             ).classes("w-32"), state, "verify", "delay")
             workers = _bind(ui.number(
@@ -2229,8 +2217,11 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
             stop_button = ui.button(t(lang, "stop"), icon="stop").props(
                 "outline color=red-7"
             ).mark("verify-stop")
-        pause_button.disable()
-        stop_button.disable()
+        pause_button.set_enabled(state["progress"]["running"])
+        stop_button.set_enabled(state["progress"]["running"])
+        _busy(run_button, state["progress"]["running"])
+        if state["progress"]["paused"]:
+            pause_button.set_text(t(lang, "resume"))
 
         filter_row = ui.row().classes("gap-2 items-center")
         results_area = ui.column().classes("w-full")
@@ -2289,9 +2280,15 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
         async def run_verify() -> None:
             if state["progress"]["running"]:
                 return
-            keys = [k.strip() for k in (only.value or "").split(",") if k.strip()]
-            entries = list(doc.entries)
+            before, revision = state["text"], state["revision"]
+            keys = re.split(r"[,\s]+", (only.value or "").strip()) if only.value else []
+            entries = list(parse_bibtex(before).entries)
             if keys:
+                missing = set(keys) - {e.key for e in entries}
+                if missing:
+                    ui.notify(t(lang, "unknown_keys").format(keys=", ".join(sorted(missing))),
+                              type="warning")
+                    return
                 entries = [e for e in entries if e.key in set(keys)]
             if not entries:
                 ui.notify(t(lang, "no_results"), type="warning", position="top")
@@ -2311,7 +2308,8 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
             stop_button.enable()
             pause_button.set_text(t(lang, "pause"))
 
-            net = Net(delay=float(delay.value or 0.8), use_cache=bool(use_cache.value))
+            net = Net(delay=max(0.0, float(delay.value if delay.value is not None else 0.8)),
+                      use_cache=bool(use_cache.value))
 
             def cb(done: int, total: int, citekey: str) -> None:
                 progress.update(done=done, total=total, key=citekey)
@@ -2327,10 +2325,15 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
 
             try:
                 results = await asyncio.to_thread(work)
+            except Exception as exc:
+                if preview_is_current(state, revision, before):
+                    ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
+                return
             finally:
                 progress["running"] = False
                 progress["paused"] = False
-                state["run_control"] = None
+                if state["run_control"] is control:
+                    state["run_control"] = None
                 try:  # widgets may have been rebuilt (language switch) mid-run
                     _busy(run_button, False)
                     pause_button.disable()
@@ -2339,6 +2342,8 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                 except Exception:  # noqa: BLE001
                     pass
 
+            if not preview_is_current(state, revision, before):
+                return
             state["verify_results"] = results
             state["verify_filter"] = "ALL"
             if control.cancelled.is_set():
@@ -2359,9 +2364,9 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
             show_results_safe()
 
         def show_results_safe() -> None:
-            try:
+            if not results_area.is_deleted:
                 show_results()
-            except Exception:  # noqa: BLE001 - panel rebuilt mid-run; rebuild again
+            else:
                 refresh_body.refresh()
 
         run_button.on_click(run_verify)
@@ -2390,6 +2395,10 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
         # Progress polling (network work runs in worker threads).
         def poll_progress() -> None:
             progress = state["progress"]
+            pause_button.set_enabled(progress["running"])
+            stop_button.set_enabled(progress["running"])
+            pause_button.set_text(t(lang, "resume" if progress["paused"] else "pause"))
+            _busy(run_button, progress["running"])
             if progress["total"]:
                 progress_bar.set_value(progress["done"] / progress["total"])
             if progress["running"]:
@@ -2402,6 +2411,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                 progress_label.set_text(t(lang, "state_idle"))
             else:
                 progress_bar.set_value(0)
+                progress_label.set_text(t(lang, "state_idle"))
 
         ui.timer(0.4, poll_progress)
 
@@ -2505,35 +2515,32 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
                     run_button = ui.button(
                         t(lang, "venues_norm_btn"), icon="preview",
                     ).props("unelevated color=primary").mark("venue-normalize-preview")
-            normalize_preview = ui.column().classes("w-full gap-2")
-
-            def compute_normalized() -> str:
-                work = parse_bibtex(state["text"])
-                normalize_document(work, NormalizeOptions(
-                    venue_style=venue_style.value or "abbr",
-                    arxiv_style="keep",
-                    fix_entry_types=True,
-                    drop_arxiv_volume=False,
-                    add_arxiv_url=False,
-                ))
-                return render_document(work, FormatOptions())
+            normalize_preview = _preview_area(lang, state, "venues", refresh_body)
 
             async def run_venue_normalize() -> None:
-                _busy(run_button, True)
-                try:
-                    result = await asyncio.to_thread(compute_normalized)
-                finally:
-                    _busy(run_button, False)
-                _render_preview(normalize_preview, state, lang, state["text"], result,
-                                refresh_body, opts=FormatOptions(),
-                                label=t(lang, "venues_norm_label"))
+                style = venue_style.value or "abbr"
+
+                def compute(before: str) -> str:
+                    work = parse_bibtex(before)
+                    normalize_document(work, NormalizeOptions(
+                        venue_style=style, arxiv_style="keep", fix_entry_types=True,
+                        drop_arxiv_volume=False, add_arxiv_url=False,
+                    ))
+                    return render_document(work, FormatOptions())
+
+                await _run_preview_job(
+                    run_button, normalize_preview, state, lang, "venues", compute,
+                    refresh_body, FormatOptions(), t(lang, "venues_norm_label"),
+                )
 
             run_button.on_click(run_venue_normalize)
 
         with ui.row().classes("gap-3 items-end flex-wrap"):
-            query = ui.input(t(lang, "search_venues")).classes("w-64").mark("venue-search")
-            family = ui.select(["ALL", *families()], value="ALL",
-                               label=t(lang, "family")).classes("w-40")
+            query = _draft(ui.input(t(lang, "search_venues")).classes("w-64").mark("venue-search"),
+                           state, "venue_query")
+            family = _draft(ui.select(["ALL", *families()], value="ALL",
+                                     label=t(lang, "family")).classes("w-40"),
+                            state, "venue_family", "ALL")
         count_label = ui.label("").classes("hx-tab-note")
         grid_area = ui.column().classes("w-full")
 

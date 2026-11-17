@@ -6,9 +6,14 @@ from typing import Dict
 
 I18N: Dict[str, Dict[str, str]] = {
     "zh": {
+        "operation_failed": "操作失败：{error}",
+        "stale_preview": "工作副本已变化，请重新生成预览。",
+        "invalid_bib": "未识别到 BibTeX 条目，请检查文件或粘贴内容。",
+        "incomplete_field": "请同时填写新增字段的名称和值。",
+        "unknown_keys": "以下引用 key 不存在：{keys}",
         "subtitle": "BibTeX 整理 · 校验 · 引用核查",
         "nav_tools": "BibTeX 工具",
-        "hero_badge": "完全在本地运行 · 文件不会上传",
+        "hero_badge": "本地工作区 · 修改先预览",
         "or_divider": "或者",
         "stage_jump": "跳到这一步",
         # upload
@@ -68,7 +73,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "nothing_to_undo": "没有可撤销的步骤",
         "nothing_to_redo": "没有可重做的步骤",
         "reset_title": "还原到原始文件？",
-        "reset_body": "将丢弃已暂存的所有步骤（不会修改磁盘上的文件）。",
+        "reset_body": "工作副本将返回原始内容，仍可通过重做恢复步骤。磁盘文件不变。",
         "close_title": "关闭当前文件？",
         "close_body": "未保存的暂存步骤将丢失（磁盘上的文件不受影响）。",
         "confirm": "确定",
@@ -256,9 +261,14 @@ I18N: Dict[str, Dict[str, str]] = {
         "table_content_note": "单元格或规则内容有变化（例如删除了表格内的 % 注释），请对照确认。",
     },
     "en": {
+        "operation_failed": "Operation failed: {error}",
+        "stale_preview": "The working copy changed. Generate a new preview first.",
+        "invalid_bib": "No BibTeX entries found. Check the file or pasted text.",
+        "incomplete_field": "Enter both the new field name and its value.",
+        "unknown_keys": "Unknown citation keys: {keys}",
         "subtitle": "BibTeX tidy · validate · verify",
         "nav_tools": "BibTeX tools",
-        "hero_badge": "Runs entirely on your machine — nothing is uploaded",
+        "hero_badge": "Local workspace · Preview before applying",
         "or_divider": "or",
         "stage_jump": "Jump to this step",
         # upload
@@ -318,7 +328,7 @@ I18N: Dict[str, Dict[str, str]] = {
         "nothing_to_undo": "Nothing to undo",
         "nothing_to_redo": "Nothing to redo",
         "reset_title": "Reset to the original file?",
-        "reset_body": "All staged steps will be discarded (the file on disk is not touched).",
+        "reset_body": "Return to the original content. Steps remain available through Redo. The file on disk is unchanged.",
         "close_title": "Close the current file?",
         "close_body": "Unsaved staged steps will be lost (the file on disk is not affected).",
         "confirm": "Confirm",
