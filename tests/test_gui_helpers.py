@@ -1,11 +1,14 @@
 """GUI rendering helper tests: itemized list, per-entry diff, table comparison."""
 
+from hx_bib.core.validator import Issue, ValidationReport, validate_text
 from hx_bib.gui.app import (
     changes_html,
+    check_html,
     entry_diff_html,
     table_compare_html,
     table_result_html,
 )
+from hx_bib.gui.diagnostics import issue_text
 
 TABLE_BEFORE = (
     "\\begin{tabular}{cc}\n"
@@ -157,3 +160,32 @@ def test_entry_diff_duplicate_addition_is_visible():
                            "@article{same,title={A}}\n@article{same,title={B}}", "changed", "en")
     assert html.count('class="hx-ediff hx-ediff-added"') == 1
     assert "title={B}" in html
+
+
+def test_check_html_uses_chinese_messages_and_actionable_hints():
+    report = validate_text("@article{x,title={T},year={2020}}")
+    html = check_html(report, "zh")
+    assert "缺少必需字段「author」" in html
+    assert "对照文献的正式出版信息补全字段" in html
+    assert "缺少必需字段「journal」" in html
+
+
+def test_check_html_filters_and_escapes_diagnostics():
+    report = ValidationReport([Issue("error", "<script>", "<unsafe>", "author", 3),
+                               Issue("info", "x", "optional", code="key_case")])
+    html = check_html(report, "zh", "error")
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert "&lt;unsafe&gt;" in html and "optional" not in html
+
+
+def test_unknown_venue_hint_explains_that_missing_presets_are_not_errors():
+    report = validate_text("@article{x,author={A},title={T},journal={Unlisted Journal},year={2020}}")
+    issue = next(i for i in report.issues if i.code == "unknown_venue")
+    message, hint = issue_text(issue, "zh")
+    assert "不代表引用有误" in message and "确认名称正确即可保留" in hint
+    assert issue_text(issue, "en")[0] == issue.message
+
+
+def test_validation_diagnostics_have_stable_codes():
+    report = validate_text("@article{x,year={bad},journal={TODO},url={example.com},title={T.}}")
+    assert report.issues and all(issue.code for issue in report.issues)

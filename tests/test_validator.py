@@ -1,5 +1,6 @@
 """Validator tests: required fields, value shapes, placeholders, style traps."""
 
+from hx_bib.core.parser import parse_bibtex
 from hx_bib.core.validator import (
     ERROR,
     INFO,
@@ -10,7 +11,6 @@ from hx_bib.core.validator import (
     validate_document,
     validate_text,
 )
-from hx_bib.core.parser import parse_bibtex
 
 CLEAN = """@inproceedings{vaswani2017attention,
   author = {Ashish Vaswani and Noam Shazeer},
@@ -78,6 +78,12 @@ def test_unbalanced_braces_error():
     doc = parse_bibtex("@article{x, author = {A}, title = {T}, journal = {J}, year = {2020}")
     report = validate_document(doc)
     assert len(report.errors) > 0
+
+
+def test_parser_diagnostics_include_a_structured_source_line():
+    report = validate_text("\n\n@article{x, title={Broken")
+    issue = next(i for i in report.issues if i.code == "parse")
+    assert issue.line == 3
 
 
 def test_duplicate_keys_error():

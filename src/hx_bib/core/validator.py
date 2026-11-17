@@ -16,7 +16,6 @@ from typing import Dict, List, Optional, Sequence
 
 from .identifiers import extract_arxiv_id, is_arxiv_like
 from .model import Document, Entry
-from .normalize import unmatched_venues
 from .venues import JOURNAL, match_venue
 
 ERROR = "error"
@@ -52,6 +51,7 @@ class Issue:
     message: str
     field_name: Optional[str] = None
     line: int = 0
+    code: str = ""
 
     def sort_key(self) -> tuple:
         return (_SEVERITY_ORDER.get(self.severity, 9), self.line, self.key)
@@ -91,22 +91,24 @@ class ValidateOptions:
 
 
 def _add(report: ValidationReport, severity: str, entry: Entry, message: str,
-         field_name: Optional[str] = None) -> None:
+         field_name: Optional[str] = None, code: str = "") -> None:
     report.issues.append(
-        Issue(severity, entry.key, message, field_name, entry.line)
+        Issue(severity, entry.key, message, field_name, entry.line, code)
     )
 
 
 def _check_duplicates(doc: Document, report: ValidationReport) -> None:
     for key, count in doc.duplicate_keys().items():
         report.issues.append(
-            Issue(ERROR, key, f"duplicate cite key appears {count} times")
+            Issue(ERROR, key, f"duplicate cite key appears {count} times", code="duplicate_key")
         )
 
 
 def _check_parsing(doc: Document, report: ValidationReport) -> None:
     for warning in doc.warnings:
-        report.issues.append(Issue(ERROR, "-", warning))
+        location = re.match(r"line (\d+):", warning)
+        report.issues.append(Issue(ERROR, "-", warning,
+                                   line=int(location.group(1)) if location else 0, code="parse"))
 
 
 def _check_required(entry: Entry, opts: ValidateOptions, report: ValidationReport) -> None:
@@ -115,61 +117,61 @@ def _check_required(entry: Entry, opts: ValidateOptions, report: ValidationRepor
     required = REQUIRED_FIELDS.get(entry.type)
     if required is None:
         if not entry.fields:
-            _add(report, WARNING, entry, f"@{entry.type} entry has no fields")
+            _add(report, WARNING, entry, f"@{entry.type} entry has no fields", code="empty_entry")
         return
     for name in required:
         if not entry.has(name):
-            _add(report, ERROR, entry, f"missing required field '{name}'", name)
+            _add(report, ERROR, entry, f"missing required field '{name}'", name, "missing_required")
         elif not (entry.get(name) or "").strip():
-            _add(report, ERROR, entry, f"required field '{name}' is empty", name)
+            _add(report, ERROR, entry, f"required field '{name}' is empty", name, "empty_required")
     if entry.type == "book" and not (entry.has("author") or entry.has("editor")):
-        _add(report, ERROR, entry, "book has neither 'author' nor 'editor'")
+        _add(report, ERROR, entry, "book has neither 'author' nor 'editor'", code="book_author")
 
 
 def _check_values(entry: Entry, opts: ValidateOptions, report: ValidationReport) -> None:
     for name, value in entry.items():
         if not value.strip():
-            _add(report, WARNING, entry, f"field '{name}' is empty", name)
+            _add(report, WARNING, entry, f"field '{name}' is empty", name, "empty_field")
         if value.count("{") != value.count("}"):
             _add(report, ERROR, entry,
-                 f"unbalanced braces in field '{name}'", name)
+                 f"unbalanced braces in field '{name}'", name, "braces")
 
     year = entry.get("year")
     if year:
         stripped = year.strip()
         if not _YEAR_RE.match(stripped):
-            _add(report, WARNING, entry, f"year '{stripped}' is not a 4-digit year", "year")
+            _add(report, WARNING, entry, f"year '{stripped}' is not a 4-digit year", "year", "year")
         else:
             lo, hi = opts.year_range
             if not (lo <= int(stripped) <= hi):
                 _add(report, WARNING, entry,
-                     f"year {stripped} outside plausible range {lo}–{hi}", "year")
+                     f"year {stripped} outside plausible range {lo}–{hi}", "year", "year_range")
 
     pages = entry.get("pages")
     if pages and not (_PAGES_RE.match(pages) or _SINGLE_PAGE_RE.match(pages)):
         _add(report, WARNING, entry,
-             f"pages '{pages}' is not in 'start--end' form", "pages")
+             f"pages '{pages}' is not in 'start--end' form", "pages", "pages")
 
     author = entry.get("author") or ""
     if re.search(r"\s+and\s+others\s*$", author, re.I) or author.strip().lower() in ("others",):
         _add(report, INFO, entry,
-             "author list ends with 'and others' (incomplete by design?)", "author")
+             "author list ends with 'and others' (incomplete by design?)", "author", "others")
 
     month = entry.get("month")
     if opts.check_months and month:
         m = month.strip().strip("{}").strip().lower()
         if m in _FULL_MONTHS or re.fullmatch(r"\d{1,2}", m):
             _add(report, INFO, entry,
-                 f"month '{month.strip()}' — consider 'jan'…'dec' macro form", "month")
+                 f"month '{month.strip()}' — consider 'jan'…'dec' macro form", "month", "month")
 
     if opts.check_title_period:
         title = (entry.get("title") or "").strip()
         if title.endswith("."):
-            _add(report, INFO, entry, "title ends with a period", "title")
+            _add(report, INFO, entry, "title ends with a period", "title", "title_period")
 
     url = entry.get("url")
     if url and not re.match(r"\s*(https?://|\\url\{)", url):
-        _add(report, WARNING, entry, f"url '{url}' has no http(s) scheme", "url")
+        _add(report, WARNING, entry, f"url '{url}' has no http(s) scheme", "url", "url")
 
 
 def _check_venues(entry: Entry, opts: ValidateOptions, report: ValidationReport) -> None:
@@ -185,43 +187,43 @@ def _check_venues(entry: Entry, opts: ValidateOptions, report: ValidationReport)
         # journal field provides enough context to recognize the publication.
         if stripped.lower() in _PLACEHOLDER_VENUES and not (name == "journal" and known):
             _add(report, WARNING, entry,
-                 f"{name} is a placeholder ('{stripped}') — fill in the real venue", name)
+                 f"{name} is a placeholder ('{stripped}') — fill in the real venue", name, "placeholder")
         elif known is None and match_venue(stripped) is None:
             _add(report, INFO, entry,
-                 f"{name} '{stripped}' is not in the venue presets", name)
+                 f"{name} '{stripped}' is not in the venue presets", name, "unknown_venue")
 
 
 def _check_entry_shape(entry: Entry, opts: ValidateOptions, report: ValidationReport) -> None:
     if entry.type == "article" and entry.has("booktitle") and not entry.has("journal"):
         _add(report, WARNING, entry,
-             "article with a booktitle — did you mean @inproceedings?", "booktitle")
+             "article with a booktitle — did you mean @inproceedings?", "booktitle", "article_booktitle")
     if entry.type in ("inproceedings", "conference") and entry.has("journal") and not entry.has("booktitle"):
         _add(report, WARNING, entry,
-             f"@{entry.type} with a journal — did you mean @article?", "journal")
+             f"@{entry.type} with a journal — did you mean @article?", "journal", "conference_journal")
 
     if is_arxiv_like(entry):
         arxiv_id = extract_arxiv_id(entry)
         if arxiv_id and not entry.get("eprint"):
             _add(report, INFO, entry,
-                 f"arXiv id {arxiv_id} found but no 'eprint' field", "eprint")
+                 f"arXiv id {arxiv_id} found but no 'eprint' field", "eprint", "arxiv_eprint")
         if entry.get("eprint") and not entry.get("archiveprefix"):
             _add(report, INFO, entry,
-                 "eprint present without 'archiveprefix = {arXiv}'", "archiveprefix")
+                 "eprint present without 'archiveprefix = {arXiv}'", "archiveprefix", "arxiv_prefix")
         volume = entry.get("volume") or ""
         if re.match(r"^\s*abs/", volume, re.I) or volume.strip() == (arxiv_id or ""):
             _add(report, INFO, entry,
-                 f"pseudo-volume '{volume.strip()}' — preprints have no volume", "volume")
+                 f"pseudo-volume '{volume.strip()}' — preprints have no volume", "volume", "arxiv_volume")
 
     if entry.type == "misc" and not any(
         entry.has(name) for name in ("howpublished", "url", "note", "eprint", "doi")
     ):
-        _add(report, WARNING, entry, "@misc entry has no url/howpublished/note/doi")
+        _add(report, WARNING, entry, "@misc entry has no url/howpublished/note/doi", code="misc_location")
 
     if opts.check_key_style:
         if re.search(r"\s", entry.key):
-            _add(report, WARNING, entry, f"cite key '{entry.key}' contains whitespace")
+            _add(report, WARNING, entry, f"cite key '{entry.key}' contains whitespace", code="key_space")
         elif entry.key != entry.key.lower():
-            _add(report, INFO, entry, f"cite key '{entry.key}' is not lowercase")
+            _add(report, INFO, entry, f"cite key '{entry.key}' is not lowercase", code="key_case")
 
 
 def validate_document(doc: Document, opts: Optional[ValidateOptions] = None) -> ValidationReport:

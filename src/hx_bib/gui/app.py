@@ -73,6 +73,7 @@ from ..core.venues import (
 from ..core.writer import FormatOptions, render_document, render_entry
 from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entries
 from ..verify.report import build_html as build_verify_html
+from .diagnostics import issue_text
 from .i18n import t
 from .styles import CSS
 from .workspace import (
@@ -569,6 +570,7 @@ def check_html(report, lang: str, flt: str = "ALL") -> str:
         return f'<div class="hx-tab-note" style="padding:8px 2px">{_esc(t(lang, "no_results"))}</div>'
     cards = []
     for issue in issues:
+        message, hint = issue_text(issue, lang)
         color = SEVERITY_COLOR[issue.severity]
         icon = SEVERITY_ICON[issue.severity]
         meta_bits = []
@@ -590,7 +592,7 @@ def check_html(report, lang: str, flt: str = "ALL") -> str:
             f'<span class="hx-chip" style="color:{color};background:{color}1a">'
             f'{_esc(t(lang, "sev_" + issue.severity))}</span>'
             f'<code class="hx-issue-key">{_esc(issue.key)}</code>'
-            f'<span class="hx-issue-msg">{_esc(issue.message)}</span>'
+            f'<span class="hx-issue-msg" title="{_esc(issue.message)}">{_esc(message)}</span>'
             f"{meta_html}"
             f'<span class="material-icons hx-issue-caret">expand_more</span>'
             f"</summary>"
@@ -605,7 +607,7 @@ def check_html(report, lang: str, flt: str = "ALL") -> str:
             f'<div class="val" style="color:{color};font-weight:700">'
             f'{_esc(t(lang, "sev_" + issue.severity))}</div></div>'
             f'<div class="hx-issue-hint">'
-            f'{_esc(t(lang, "sev_" + issue.severity + "_hint"))}</div>'
+            f'{_esc(hint)}</div>'
             f"</div></details>"
         )
     return "".join(cards)
@@ -1918,101 +1920,178 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
 
 # -- check ------------------------------------------------------------------
 def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("rule", t(lang, "tab_check"), t(lang, "check_note"))
-        ui.html(_steps_html(lang, ["steps_check_run", "steps_check_filter",
-                                   "steps_check_detail"]))
-        run_button = ui.button(t(lang, "run_check"), icon="rule").props(
-            "unelevated color=primary"
-        ).mark("run-check")
-        filter_row = ui.row().classes("gap-2 items-center w-full")
-        result_area = ui.column().classes("w-full")
+    controls = {}
 
-        def render_report(report) -> None:
-            result_area.clear()
-            filter_row.clear()
-            flt = state.get("check_filter", "ALL")
-            counts = {
-                "error": report.count("error"),
-                "warning": report.count("warning"),
-                "info": report.count("info"),
-            }
-            if not report.issues and flt != "ALL":
-                flt = state["check_filter"] = "ALL"
-            with filter_row:
-                if report.issues:
+    def goto(key: str) -> None:
+        state["tab"] = key
+        refresh_body.refresh()
 
-                    def pick(value: str) -> None:
-                        state["check_filter"] = value
-                        render_report(report)
+    def show_results() -> None:
+        if not _IN_SIM:
+            ui.run_javascript("""
+                const results = document.querySelector('[data-hx-scroll="preview-check"]');
+                if (results) {
+                    results.scrollTop = 0;
+                    results.scrollIntoView({block: 'start', behavior: 'instant'});
+                }
+            """)
 
-                    ui.button(
-                        f"{t(lang, 'check_all')}  {len(report.issues)}",
-                        on_click=lambda: pick("ALL"),
-                    ).props("dense unelevated" if flt == "ALL" else "dense flat")
-                    for sev in ("error", "warning", "info"):
-                        if not counts[sev]:
-                            continue
-                        button = ui.button(
-                            f"{t(lang, 'sev_' + sev)}  {counts[sev]}",
-                            on_click=lambda v=sev: pick(v),
-                        ).props("dense unelevated" if flt == sev else "dense flat")
-                        button.style(f"color:{SEVERITY_COLOR[sev]}")
+    with ui.element("div").classes("hx-operation-grid w-full"):
+        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
+            'data-hx-scroll="options-check"'
+        ):
+            _panel_head("fact_check", t(lang, "tab_check"), t(lang, "check_note"))
+            ui.html(_steps_html(lang, ["steps_options", "steps_check_run", "steps_check_detail"]))
+            run_button = ui.button(t(lang, "run_check"), icon="fact_check").props(
+                "unelevated color=primary"
+            ).classes("hx-check-run").mark("run-check")
+            view_results = ui.button(t(lang, "check_show_results"), icon="arrow_forward",
+                                     on_click=show_results).props(
+                "outline color=primary no-caps"
+            ).mark("check-show-results")
+            ui.label(t(lang, "check_options")).classes("hx-optlabel")
+            with ui.column().classes("w-full gap-1"):
+                for key in DEFAULT_SETTINGS["check"]:
+                    _bind(ui.switch(
+                        t(lang, "check_opt_" + key), value=bool(_opt(state, "check", key)),
+                    ).mark("check-option-" + key), state, "check", key)
+            ui.label(t(lang, "check_always")).classes("hx-tab-note")
+            ui.separator()
+            ui.label(t(lang, "check_next_title")).classes("hx-optlabel")
+            ui.label(t(lang, "check_next_hint")).classes("hx-tab-note")
+            with ui.column().classes("hx-check-shortcuts w-full gap-1"):
+                for key, icon in (("clean", "cleaning_services"), ("normalize", "auto_fix_high"),
+                                  ("verify", "travel_explore")):
+                    ui.button(t(lang, "check_goto_" + key), icon=icon,
+                              on_click=lambda k=key: goto(k)).props(
+                        "flat dense color=primary no-caps"
+                    ).classes("w-full").mark("check-goto-" + key)
 
-                    def download_json() -> None:
-                        payload = {
-                            "tool": "hx-bib",
-                            "issues": [
-                                {"severity": i.severity, "key": i.key,
-                                 "field": i.field_name, "line": i.line,
-                                 "message": i.message}
-                                for i in report.sorted()
-                            ],
-                        }
-                        ui.download(
-                            json.dumps(payload, indent=2, ensure_ascii=False)
-                            .encode("utf-8"),
-                            f"{Path(state['name']).stem or 'bibliography'}.check.json",
-                        )
+        with ui.column().classes("hx-preview w-full gap-2").props('data-hx-scroll="preview-check"'):
+            with ui.card().classes("hx-card w-full p-5 gap-3"):
+                _panel_head("rule", t(lang, "check_results"), t(lang, "check_results_note"))
+                status = ui.label("").classes("hx-tab-note").style("min-height:40px").mark("check-status")
+                result_area = ui.column().classes("w-full gap-3")
 
-                    ui.button(t(lang, "download_json"), icon="download",
-                              on_click=download_json).props(
-                        "dense outline"
-                    ).style("margin-left:auto")
-            with result_area:
-                ui.html(check_html(report, lang, flt))
-
-        if state.get("check_report") is not None:
-            render_report(state["check_report"])
+    def update_status() -> None:
+        if status.is_deleted:
+            return
+        report = state["check_report"]
+        running = state["check_job"] is not None
+        _busy(run_button, running)
+        view_results.set_enabled(report is not None)
+        stale = report is not None and state["check_config"] != _preview_config(state, "check")
+        if running:
+            text = t(lang, "check_running")
+        elif stale:
+            text = t(lang, "check_stale")
+        elif report is None:
+            text = t(lang, "check_empty")
         else:
-            with result_area:
-                with ui.element("div").classes("hx-empty"):
-                    ui.label(t(lang, "check_empty"))
+            text = t(lang, "check_summary").format(entries=len(doc.entries), issues=len(report.issues))
+        status.set_text(text)
+        status.style("color:#b45309" if stale else "color:var(--hx-muted)")
+        button = controls.get("download")
+        if button is not None and not button.is_deleted:
+            button.set_enabled(not stale and not running)
 
-        async def run_check() -> None:
-            before, revision = state["text"], state["revision"]
-            _busy(run_button, True)
-            try:
-                work = parse_bibtex(before)
-                report = await asyncio.to_thread(
-                    lambda: validate_document(work, ValidateOptions())
-                )
-                if preview_is_current(state, revision, before):
-                    state["check_report"] = report
-                    if not result_area.is_deleted:
-                        render_report(report)
-                    elif state["mode"] == "tools" and state["tab"] == "check":
-                        refresh_body.refresh()
-            except Exception as exc:
+    def render_report(report) -> None:
+        result_area.clear()
+        with result_area:
+            with ui.element("div").classes("hx-check-metrics w-full"):
+                for severity in ("error", "warning", "info"):
+                    color = SEVERITY_COLOR[severity]
+                    ui.html(
+                        f'<div class="hx-check-metric" style="--metric-color:{color}">'
+                        f'<span class="material-icons" aria-hidden="true">{SEVERITY_ICON[severity]}</span>'
+                        f'<strong>{report.count(severity)}</strong>'
+                        f'<span>{_esc(t(lang, "sev_" + severity))}</span></div>'
+                    ).classes("w-full").tooltip(t(lang, "sev_" + severity + "_hint"))
+            labels = {"ALL": f'{t(lang, "check_all")} {len(report.issues)}'}
+            labels.update({severity: f'{t(lang, "sev_" + severity)} {report.count(severity)}'
+                           for severity in ("error", "warning", "info")})
+            filters = ui.toggle(labels, value=state["check_filter"]).props(
+                "dense unelevated no-caps toggle-color=white toggle-text-color=primary"
+            ).mark("check-filter")
+            ui.label(t(lang, "check_expand_hint")).classes("hx-tab-note")
+            issues_area = ui.column().classes("hx-check-issues w-full").props(
+                'data-hx-scroll="check-issues"'
+            )
+
+            def show_issues() -> None:
+                issues_area.clear()
+                with issues_area:
+                    ui.html(check_html(report, lang, filters.value or "ALL")).classes("w-full")
+
+            def pick(e) -> None:
+                state["check_filter"] = e.value or "ALL"
+                show_issues()
+
+            filters.on_value_change(pick)
+            show_issues()
+
+            def download_json() -> None:
+                if state["check_report"] is not report or state["check_config"] != _preview_config(state, "check"):
+                    ui.notify(t(lang, "check_stale"), type="warning")
+                    return
+                payload = {
+                    "tool": "hx-bib", "options": state["check_config"],
+                    "issues": [
+                        {"severity": i.severity, "key": i.key, "code": i.code,
+                         "field": i.field_name, "line": i.line, "message": i.message}
+                        for i in report.sorted()
+                    ],
+                }
+                ui.download(json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"),
+                            f"{Path(state['name']).stem or 'bibliography'}.check.json")
+
+            with ui.row().classes("hx-preview-actions w-full items-center gap-2"):
+                ui.label(t(lang, "check_readonly")).classes("hx-tab-note")
+                ui.space()
+                controls["download"] = ui.button(t(lang, "download_json"), icon="download",
+                                                  on_click=download_json).props(
+                    "outline no-caps"
+                ).mark("check-download")
+        update_status()
+
+    state.setdefault("preview_controls", {})["check"] = update_status
+    if state["check_report"] is not None:
+        render_report(state["check_report"])
+    else:
+        with result_area, ui.element("div").classes("hx-empty hx-check-empty"):
+            ui.icon("fact_check", size="36px").style("color:#a5b4fc")
+            ui.label(t(lang, "check_empty_title")).classes("hx-panel-title")
+            ui.label(t(lang, "check_empty_body")).classes("hx-tab-note")
+    update_status()
+
+    async def run_check() -> None:
+        before, revision = state["text"], state["revision"]
+        config = _preview_config(state, "check")
+        options = ValidateOptions(**config)
+        token = object()
+        state["check_job"] = token
+        _busy(run_button, True)
+        update_status()
+        try:
+            report = await asyncio.to_thread(lambda: validate_document(parse_bibtex(before), options))
+            if preview_is_current(state, revision, before) and state["check_job"] is token:
+                state.update(check_report=report, check_config=config, check_filter="ALL", check_job=None)
+                if not result_area.is_deleted:
+                    render_report(report)
+                elif state["mode"] == "tools" and state["tab"] == "check":
+                    refresh_body.refresh()
+        except Exception as exc:
+            if preview_is_current(state, revision, before):
                 ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
-            finally:
-                try:
-                    _busy(run_button, False)
-                except Exception:  # noqa: BLE001 - rebuilt while running
-                    pass
+        finally:
+            if state["check_job"] is token:
+                state["check_job"] = None
+                if status.is_deleted and state["mode"] == "tools" and state["tab"] == "check":
+                    refresh_body.refresh()
+            _busy(run_button, False)
+            update_status()
 
-        run_button.on_click(run_check)
-
+    run_button.on_click(run_check)
 
 # -- verify -----------------------------------------------------------------
 def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:

@@ -129,10 +129,32 @@ async def main() -> None:
 
         user.find(marker="tab-check").click()
         await settle()
+        await user.should_see("接下来怎么处理")
+        await user.should_see("查看 BibTeX 中需要处理的问题")
+        assert not next(iter(user.find(marker="check-show-results").elements)).enabled
         user.find(marker="run-check").click()
         await settle()
         await user.should_see("格式校验")
-        print("✓ validate tab runs")
+        await user.should_see(marker="check-filter")
+        await user.should_see(marker="check-download")
+        assert next(iter(user.find(marker="check-show-results").elements)).enabled
+        user.find(marker="check-filter").trigger("update:model-value", 1)
+        await settle()
+        user.find(marker="check-option-check_venues").click()
+        await settle()
+        await user.should_see("检查项已变化")
+        assert not next(iter(user.find(marker="check-download").elements)).enabled
+        user.find(marker="run-check").click()
+        await settle()
+        assert next(iter(user.find(marker="check-download").elements)).enabled
+        user.find(marker="check-goto-clean").click()
+        await settle()
+        await user.should_see(marker="clean-preview")
+        user.find(marker="tab-check").click()
+        await settle()
+        await user.should_see(marker="check-filter")
+        assert not next(iter(user.find(marker="check-option-check_venues").elements)).value
+        print("✓ validation options, filters, stale report protection and repair shortcuts work")
 
         user.find(marker="tab-verify").click()
         await settle()

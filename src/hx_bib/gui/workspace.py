@@ -21,6 +21,10 @@ DEFAULT_SETTINGS = {
         "drop_arxiv_volume": True, "add_arxiv_url": True,
     },
     "verify": {"delay": 0.8, "workers": 1, "use_cache": True},
+    "check": {
+        "required_fields": True, "check_venues": True, "check_months": True,
+        "check_title_period": True, "check_key_style": True,
+    },
 }
 
 _CHOICES = {
@@ -66,7 +70,7 @@ def new_state() -> dict:
         "name": "", "path": "", "history": [], "pointer": 0,
         "revision": 0, "previews": {}, "preview_jobs": {}, "drafts": {},
         "verify_results": None, "verify_filter": "ALL",
-        "check_report": None, "check_filter": "ALL",
+        "check_report": None, "check_filter": "ALL", "check_config": None, "check_job": None,
         "progress": idle_progress(), "run_control": None,
         "tab": "format", "venues_only": False,
         "source_text": "", "amp": "space", "blank_lines": True,
@@ -85,7 +89,7 @@ def invalidate_results(state: dict) -> None:
         state["run_control"].cancel()
     state.update(
         revision=state["revision"] + 1, previews={}, preview_jobs={}, preview_controls={},
-        check_report=None, verify_results=None, check_filter="ALL",
+        check_report=None, check_config=None, check_job=None, verify_results=None, check_filter="ALL",
         verify_filter="ALL", run_control=None, progress=idle_progress(),
     )
 
