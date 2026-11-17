@@ -141,3 +141,19 @@ def test_table_result_html_shows_output():
     html = table_result_html("a & b \\\\", "en")
     assert "Formatted result" in html
     assert "<pre" in html and "a &amp; b" in html
+
+
+def test_entry_diff_dedupe_keeps_last_occurrence():
+    before = "@article{same,title={First}}\n@article{same,title={Last}}"
+    after = "@article{same,title={Last}}"
+    html = entry_diff_html(before, after, "changed", "en")
+    assert html.count('class="hx-ediff hx-ediff-removed"') == 1
+    assert "First" in html and "Last" not in html
+    assert "hx-ediff-modified" not in html
+
+
+def test_entry_diff_duplicate_addition_is_visible():
+    html = entry_diff_html("@article{same,title={A}}",
+                           "@article{same,title={A}}\n@article{same,title={B}}", "changed", "en")
+    assert html.count('class="hx-ediff hx-ediff-added"') == 1
+    assert "title={B}" in html

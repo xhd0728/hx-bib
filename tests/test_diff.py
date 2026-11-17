@@ -1,6 +1,7 @@
 """Diff tests: itemized field changes and side-by-side line rows."""
 
-from hx_bib.core.diff import diff_lines, diff_texts, split_entries
+from hx_bib.core.diff import diff_documents, diff_lines, diff_texts, split_entries
+from hx_bib.core.parser import parse_bibtex
 
 
 def test_detects_added_removed_modified_fields():
@@ -152,3 +153,25 @@ def test_split_entries_nested_braces():
     assert len(spans) == 1
     assert spans[0].key == "a"
     assert spans[0].lines[-1] == "}"
+
+
+def test_dedupe_preview_identifies_removed_occurrence_when_keeping_last():
+    before = parse_bibtex("@article{same,title={First}}\n@article{same,title={Last}}")
+    after = parse_bibtex("@article{same,title={Last}}")
+    diff = diff_documents(before, after)
+    assert diff.count("removed") == 1 and diff.count("modified") == 0
+    assert diff.changed[0].before.get("title") == "First"
+
+
+def test_duplicate_key_additions_are_counted_once_each():
+    before = parse_bibtex("@article{same,title={A}}")
+    after = parse_bibtex("@article{same,title={A}}\n@article{same,title={B}}")
+    diff = diff_documents(before, after)
+    assert diff.count("added") == 1 and diff.count("unchanged") == 1
+    assert diff.changed[0].after.get("title") == "B"
+
+
+def test_reordered_duplicate_keys_do_not_create_field_changes():
+    before = parse_bibtex("@article{same,title={A}}\n@article{same,title={B}}")
+    after = parse_bibtex("@article{same,title={B}}\n@article{same,title={A}}")
+    assert not diff_documents(before, after).changed

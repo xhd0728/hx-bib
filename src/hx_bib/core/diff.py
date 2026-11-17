@@ -14,7 +14,8 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from collections import defaultdict
+from typing import Callable, List, Optional, Sequence, Tuple, TypeVar
 
 from .model import Document, Entry
 from .parser import parse_bibtex
@@ -87,22 +88,48 @@ def _diff_entries(before: Optional[Entry], after: Optional[Entry]) -> EntryDiff:
     )
 
 
+T = TypeVar("T")
+
+
+def entry_identity(entry: Entry) -> tuple:
+    """Content identity used to keep retained duplicate keys paired correctly."""
+    return entry.type, tuple(sorted((k, clean_value(v)) for k, v in entry.items()))
+
+
+def match_by_key(before: Sequence[T], after: Sequence[T], key: Callable[[T], str],
+                 identity: Callable[[T], object]) -> List[Tuple[Optional[T], Optional[T]]]:
+    """Pair every occurrence once, preferring identical content within a key.
+
+    Exact matches are reserved first so keeping the last duplicate is shown
+    as a deletion of the first, rather than a modification of the survivor.
+    Unmatched occurrences are then paired in source order.
+    """
+    remaining = defaultdict(list)
+    for index, item in enumerate(after):
+        remaining[key(item)].append(index)
+    before_ids = [identity(item) for item in before]
+    after_ids = [identity(item) for item in after]
+    matches = {}
+    for index, item in enumerate(before):
+        candidates = remaining[key(item)]
+        match = next((i for i in candidates if after_ids[i] == before_ids[index]), None)
+        if match is not None:
+            matches[index] = match
+            candidates.remove(match)
+    for index, item in enumerate(before):
+        if index not in matches and remaining[key(item)]:
+            matches[index] = remaining[key(item)].pop(0)
+    used = set(matches.values())
+    pairs = [(item, after[matches[i]] if i in matches else None) for i, item in enumerate(before)]
+    pairs.extend((None, item) for i, item in enumerate(after) if i not in used)
+    return pairs
+
+
 def diff_documents(before: Document, after: Document) -> DocDiff:
-    """Compare two parsed documents entry-by-entry (matched on cite key)."""
-    result = DocDiff()
-    after_by_key = {}
-    for e in after.entries:
-        after_by_key.setdefault(e.key, e)
-    seen = set()
-    for b in before.entries:
-        a = after_by_key.get(b.key)
-        if a is not None:
-            seen.add(b.key)
-        result.entries.append(_diff_entries(b, a))
-    for a in after.entries:
-        if a.key not in seen:
-            result.entries.append(_diff_entries(None, a))
-    return result
+    """Compare entries without losing added/removed duplicate cite keys."""
+    return DocDiff(entries=[_diff_entries(b, a) for b, a in match_by_key(
+        before.entries, after.entries, key=lambda e: e.key, identity=entry_identity,
+    )])
 
 
 def diff_texts(before_text: str, after_text: str) -> DocDiff:

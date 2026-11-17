@@ -41,7 +41,7 @@ from typing import Callable, Dict, List, Optional
 from nicegui import events, ui
 
 from ..core import cleaner
-from ..core.diff import diff_documents, diff_lines, split_entries
+from ..core.diff import diff_documents, diff_lines, entry_identity, match_by_key, split_entries
 from ..core.latex_table import (
     CommentLine,
     Row,
@@ -298,14 +298,10 @@ def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
     entries never merge into one undifferentiated wall of rows."""
     b_spans = split_entries(before)
     a_spans = split_entries(after)
-    b_by_key: Dict[str, object] = {}
-    for sp in b_spans:
-        if sp.key is not None and sp.key not in b_by_key:
-            b_by_key[sp.key] = sp
-    a_by_key: Dict[str, object] = {}
-    for sp in a_spans:
-        if sp.key is not None and sp.key not in a_by_key:
-            a_by_key[sp.key] = sp
+    def span_identity(span):
+        text = "\n".join(span.lines)
+        entries = parse_bibtex(text).entries
+        return entry_identity(entries[0]) if entries else text
 
     def block(key_html: str, kind: str, rows=None, badges: str = "") -> str:
         head = (
@@ -331,11 +327,17 @@ def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
         if any(r.kind != "equal" for r in rows):
             blocks.append(block(_esc(t(lang, "free_block")), "modified", rows))
 
-    for sp in b_spans:
-        if sp.key is None:
+    pairs = match_by_key(
+        [sp for sp in b_spans if sp.key is not None],
+        [sp for sp in a_spans if sp.key is not None],
+        key=lambda sp: sp.key, identity=span_identity,
+    )
+    for sp, a in pairs:
+        if sp is None:
+            blocks.append(block(_esc(a.key), "added",
+                                diff_lines("", "\n".join(a.lines), 0, a.start)))
             continue
         left_text = "\n".join(sp.lines)
-        a = a_by_key.get(sp.key)
         if a is None:
             blocks.append(block(_esc(sp.key), "removed",
                                 diff_lines(left_text, "", sp.start, 0)))
@@ -348,12 +350,6 @@ def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
             continue
         blocks.append(block(_esc(sp.key), "modified", rows,
                             _entry_badges(left_text, right_text)))
-
-    for sp in a_spans:
-        if sp.key is None or sp.key in b_by_key:
-            continue
-        blocks.append(block(_esc(sp.key), "added",
-                            diff_lines("", "\n".join(sp.lines), 0, sp.start)))
 
     if not blocks:
         return (f'<div class="hx-tab-note" style="padding:12px 0">'
