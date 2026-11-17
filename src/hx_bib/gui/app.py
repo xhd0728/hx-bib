@@ -63,6 +63,12 @@ from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entri
 from ..verify.report import build_html as build_verify_html
 
 from .i18n import t
+from .styles import CSS
+from .workspace import (
+    DEFAULT_SETTINGS, invalidate_results, jump_stage as _jump_stage,
+    merge_settings as _merge_settings, new_state as _new_state,
+    preview_is_current, push_stage as _push_stage,
+)
 
 SEVERITY_COLOR = {"error": "#dc2626", "warning": "#d97706", "info": "#2563eb"}
 VERDICT_COLOR = {
@@ -72,279 +78,6 @@ VERDICT_COLOR = {
 
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
-
-from .workspace import (
-    DEFAULT_SETTINGS, invalidate_results, jump_stage as _jump_stage,
-    merge_settings as _merge_settings, new_state as _new_state,
-    preview_is_current, push_stage as _push_stage,
-)
-
-CSS = """
-:root { --hx-ink:#0f172a; --hx-body:#334155; --hx-muted:#5b6577; --hx-line:#e6e8f0;
-        --hx-brand:#4338ca; --hx-brand-ink:#3730a3; --hx-brand-soft:#eef2ff;
-        --hx-surface:#fff; --hx-bg:#f6f7fb; }
-body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-       background: var(--hx-bg); color: var(--hx-body); }
-.q-btn { border-radius: 10px; font-weight: 600; text-transform: none; }
-.q-btn--unelevated.bg-primary { box-shadow: 0 2px 10px -4px rgba(67,56,202,.55); }
-.q-btn--unelevated.bg-primary:hover { box-shadow: 0 3px 14px -4px rgba(67,56,202,.65); }
-.q-field--outlined .q-field__control { border-radius: 10px; background:#fff; }
-.q-field--outlined .q-field__control:before { border-color:#d8dce8; }
-.q-field--outlined:hover .q-field__control:before { border-color:#b9c0d4; }
-.q-field--outlined.q-field--focused .q-field__control:after { border-width:2px; }
-/* segmented button groups (ui.toggle) — same visual language as the header switch */
-.q-btn-toggle { background:#eef0f6; border-radius:12px; padding:3px; }
-.q-btn-toggle .q-btn { border-radius:9px !important; font-weight:600; font-size:12.5px;
-                       color:#4b5563; min-height:28px; padding:2px 12px;
-                       transition:background .15s,color .15s,box-shadow .15s; }
-.q-btn-toggle .q-btn:hover { background:rgba(255,255,255,.55); color:var(--hx-ink); }
-.q-btn-toggle .q-btn.bg-white { background:#fff !important; color:var(--hx-brand-ink) !important;
-                                box-shadow:0 1px 3px rgba(15,23,42,.14); }
-/* subtle scrollbars */
-::-webkit-scrollbar { width:10px; height:10px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:8px;
-                            border:2px solid transparent; background-clip:padding-box; }
-::-webkit-scrollbar-thumb:hover { background:#94a3b8; background-clip:padding-box;
-                                  border:2px solid transparent; }
-/* switches in brand indigo */
-.q-toggle__inner { color:#b6bfd0; }
-.q-toggle__inner--truthy { color:var(--hx-brand); }
-.hx-title, .hx-brand, .hx-hero-title, .hx-panel-title { font-weight: 800;
-       letter-spacing: -0.02em; color: var(--hx-ink); }
-.hx-card { border-radius: 16px; background: var(--hx-surface); border: 1px solid var(--hx-line);
-           box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 10px 30px -18px rgba(15,23,42,.15); }
-.hx-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
-           font-weight:700; white-space:nowrap; }
-.hx-tab-note { color:#4b5563; font-size:13px; }
-.hx-empty { border:1.5px dashed #cbd5e1; border-radius:12px; padding:22px 16px; width:100%;
-            text-align:center; color:#64748b; font-size:13.5px; background:#fafbfc; }
-/* ---- app header ---- */
-.hx-header { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,.86);
-             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-             border-bottom: 1px solid var(--hx-line); }
-.hx-header-inner { min-height: 60px; }
-.hx-logo { width:34px; height:34px; border-radius:10px; display:flex; align-items:center;
-           justify-content:center; background:linear-gradient(135deg,#4338ca,#7c3aed);
-           color:#fff; font-weight:800; font-size:13px; letter-spacing:.02em;
-           box-shadow:0 4px 10px -4px rgba(67,56,202,.55); flex:none; }
-.hx-brand { font-size:19px; line-height:1.1; }
-.hx-brand-sub { font-size:12px; color:var(--hx-muted); line-height:1.2; }
-/* ---- header mode switch (BibTeX tools ⇄ LaTeX tables) ---- */
-.hx-seg { display:flex; gap:2px; padding:3px; background:#eef0f6;
-          border:1px solid var(--hx-line); border-radius:12px; }
-.hx-seg-item { display:inline-flex; align-items:center; gap:7px; text-decoration:none !important;
-               font-size:13px; font-weight:700; color:#4b5563 !important; padding:6px 14px;
-               border:none; background:transparent; cursor:pointer; font-family:inherit;
-               border-radius:9px; transition:background .15s,color .15s,box-shadow .15s;
-               white-space:nowrap; }
-.hx-seg-item:hover { color:var(--hx-ink) !important; background:rgba(255,255,255,.55); }
-.hx-seg-item .hx-seg-ico { font-size:16px; color:inherit; }
-.hx-seg-active { background:#fff; color:var(--hx-brand-ink) !important;
-                 box-shadow:0 1px 3px rgba(15,23,42,.14); cursor:default; }
-.hx-seg-active:hover { background:#fff; }
-@media (max-width: 680px) { .hx-brand-sub { display:none; } }
-.hx-lang { color:var(--hx-brand-ink) !important; font-weight:700; }
-/* ---- hero (upload screen) ---- */
-.hx-hero-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 12px;
-                 border-radius:999px; background:#ecfdf5; color:#047857; font-size:12.5px;
-                 font-weight:600; border:1px solid #d1fae5; }
-.hx-hero-title { font-size:30px; line-height:1.2; margin:8px 0 2px; text-align:center; }
-.hx-hero-sub { color:var(--hx-muted); font-size:14.5px; text-align:center; }
-.hx-features { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
-.hx-feature { display:inline-flex; align-items:center; gap:6px; padding:6px 13px;
-              border-radius:999px; background:#fff; border:1px solid var(--hx-line);
-              color:#475569; font-size:12.5px; font-weight:600; }
-.hx-feature .material-icons { color:var(--hx-brand); font-size:15px; }
-.hx-divider { display:flex; align-items:center; gap:12px; color:var(--hx-muted);
-              font-size:12.5px; font-weight:600; }
-.hx-divider::before, .hx-divider::after { content:""; flex:1; height:1px;
-              background:var(--hx-line); }
-/* ---- uploader as dropzone ---- */
-.hx-uploader { width:100%; }
-.hx-uploader .q-uploader__header { background:linear-gradient(180deg,#fafbff,#f4f6fd) !important;
-              color:var(--hx-ink) !important; border:2px dashed #c7d2fe; border-radius:14px;
-              transition:border-color .15s, background .15s; }
-.hx-uploader .q-uploader__header:hover { border-color:#818cf8; background:#eef2ff !important; }
-.hx-uploader .q-uploader__header-content { padding:24px 16px; justify-content:center; text-align:center; }
-.hx-uploader .q-uploader__title { font-weight:700; font-size:15px; }
-.hx-uploader .q-uploader__subtitle { display:none; }
-.hx-uploader .q-uploader__header .q-btn { background:#fff; border:1px solid var(--hx-line);
-              color:var(--hx-brand-ink); border-radius:10px; }
-/* auto-upload: hide the empty file list so the dropzone stays compact
-   (still shows entries when a file errors out) */
-.hx-uploader .q-uploader__list:not(:has(.q-uploader__file)) { display:none; }
-/* ---- workspace tabs as a sticky segmented bar (pinned below the header) ---- */
-.hx-tabs { position:sticky; top:60px; z-index:40; background:#f1f3f9;
-           border:1px solid var(--hx-line); border-radius:14px; padding:4px;
-           box-shadow:0 5px 18px -14px rgba(15,23,42,.4); }
-.hx-tabs .q-tab { min-height:38px; border-radius:10px; padding:0 14px; color:#4b5563;
-                  font-weight:600; font-size:13.5px;
-                  transition:background .15s, color .15s, box-shadow .15s; }
-.hx-tabs .q-tab:hover { background:rgba(255,255,255,.6); color:var(--hx-ink); }
-.hx-tabs .q-tab--active { background:#fff; color:var(--hx-brand-ink);
-                          box-shadow:0 1px 3px rgba(15,23,42,.14); }
-.hx-tabs .q-tab--active:hover { background:#fff; }
-.hx-tabs .q-tab__indicator { display:none; }
-.hx-tabs .q-tabs__content { gap:2px; }
-.hx-tabs .q-tabs__arrow { color:#64748b; }
-/* ---- panel headers / option bars ---- */
-.hx-panel-icon { width:36px; height:36px; border-radius:10px; background:var(--hx-brand-soft);
-                 display:flex; align-items:center; justify-content:center;
-                 color:var(--hx-brand-ink); flex:none; }
-.hx-panel-title { font-size:16.5px; font-weight:700; line-height:1.25; color:var(--hx-ink); }
-.hx-optbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px 20px;
-             padding:12px 14px; background:#f8fafc; border:1px solid var(--hx-line);
-             border-radius:12px; }
-.hx-optlabel { font-size:12px; font-weight:700; color:var(--hx-muted);
-               text-transform:uppercase; letter-spacing:.04em; }
-.hx-kbd { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:11.5px;
-          color:#475569; background:#f1f5f9; border:1px solid var(--hx-line);
-          border-bottom-width:2px; border-radius:6px; padding:1px 7px; }
-/* ---- venue presets: normalization action + cards ---- */
-.hx-vaction { background:linear-gradient(135deg,#eef2ff,#f5f3ff); border:1px solid #e0e7ff;
-              border-radius:14px; padding:14px 16px; }
-.hx-vaction .material-icons { color:#4338ca; }
-.hx-venue-card { transition:border-color .15s, box-shadow .15s, transform .15s; }
-.hx-venue-card:hover { border-color:#c7d2fe;
-                       box-shadow:0 6px 22px -12px rgba(67,56,202,.38); }
-.hx-vrow { display:flex; align-items:center; gap:8px; padding:3px 4px 3px 8px;
-           border-radius:8px; background:#f8fafc; border:1px solid #eef2f7; }
-.hx-vrow-label { flex:none; width:34px; font-size:10.5px; font-weight:800; color:#7c8698;
-                 letter-spacing:.04em; }
-.hx-vrow-val { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-               font-size:11.5px; color:#334155; }
-.hx-style-ex { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-               font-size:12px; color:#64748b; }
-/* ---- status bar + stage history ---- */
-.hx-status { background:rgba(255,255,255,.94); }
-.hx-stage { border-radius:999px !important; color:#5b6577 !important; font-weight:600;
-            font-size:12.5px !important; min-height:28px; padding:0 10px; }
-.hx-stage:hover { background:#f1f5f9; }
-.hx-stage-active { background:var(--hx-brand-soft) !important;
-                   color:var(--hx-brand-ink) !important; }
-.hx-stage-future { opacity:.45; }
-.hx-diff { width:100%; min-width:560px; border-collapse:collapse; font:12.5px/1.55 ui-monospace,
-           SFMono-Regular, Menlo, Consolas, monospace; table-layout: fixed; }
-.hx-diff td { padding:1px 8px; vertical-align:top; white-space:pre-wrap; word-break:break-all; }
-.hx-diff td.ln { width:44px; color:#6b7280; text-align:right; user-select:none; }
-.hx-diff td.old, .hx-diff td.new { width: calc(50% - 44px); }
-.hx-diff tr.del td.old { background:#fee2e2; }
-.hx-diff tr.ins td.new { background:#dcfce7; }
-.hx-diff tr.replace td.old { background:#fee2e2; }
-.hx-diff tr.replace td.new { background:#dcfce7; }
-.hx-diff tr.equal td { color:#6b7280; }
-.hx-diff td.empty { background: repeating-linear-gradient(45deg,
-  #fafbfc, #fafbfc 5px, #f1f3f6 5px, #f1f3f6 10px); }
-.hx-ediff { border:1px solid #e5e7eb; border-radius:12px; margin:12px 0;
-            overflow:hidden; background:#fff; }
-.hx-ediff-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-                 padding:7px 12px; font-size:13px; background:#f8fafc;
-                 border-bottom:1px solid #eef2f7; }
-.hx-ediff-added .hx-ediff-head { background:#f0fdf4; border-bottom-color:#dcfce7; }
-.hx-ediff-removed .hx-ediff-head { background:#fef2f2; border-bottom-color:#fee2e2; }
-.hx-ediff-modified .hx-ediff-head { background:#fffbeb; border-bottom-color:#fef3c7; }
-.hx-ediff-unchanged { border-color:#eef2f7; }
-.hx-ediff-unchanged .hx-ediff-head { border-bottom:none; opacity:.72; }
-.hx-ediff-key { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-                font-weight:700; color:#0f172a; }
-.hx-ediff-body { overflow-x:auto; }
-.hx-kind { display:inline-block; padding:1px 9px; border-radius:999px;
-           font-size:11.5px; font-weight:700; }
-.hx-kind-added { color:#15803d; background:#dcfce7; }
-.hx-kind-removed { color:#b91c1c; background:#fee2e2; }
-.hx-kind-modified { color:#92400e; background:#fef3c7; }
-.hx-kind-unchanged { color:#475569; background:#f1f5f9; }
-.hx-changes { width:100%; border-collapse:collapse; font-size:13.5px; }
-.hx-changes th { text-align:left; font-size:12px; color:#4b5563; text-transform:uppercase;
-                 letter-spacing:.05em; border-bottom:1px solid #e5e7eb; padding:6px 8px; }
-.hx-changes td { padding:6px 8px; border-bottom:1px solid #f1f5f9; vertical-align:top; }
-.hx-field-add { color:#15803d; background:#dcfce7; border-radius:5px; padding:0 5px; font-size:12px; }
-.hx-field-del { color:#b91c1c; background:#fee2e2; border-radius:5px; padding:0 5px; font-size:12px; }
-.hx-field-mod { color:#92400e; background:#fef3c7; border-radius:5px; padding:0 5px; font-size:12px; }
-.hx-issue { display:flex; gap:8px; padding:4px 0; font-size:13.5px; }
-/* ---- validation issue cards (expandable, severity-annotated) ---- */
-.hx-check-clean { display:flex; align-items:center; gap:8px; color:#15803d;
-                  font-size:14px; font-weight:600; padding:6px 2px; }
-.hx-check-clean .material-icons { font-size:20px; }
-.hx-issue-card { border:1px solid var(--hx-line); border-left:4px solid #cbd5e1;
-                 border-radius:10px; background:#fff; margin:7px 0; overflow:hidden; }
-.hx-issue-card summary { display:flex; align-items:center; gap:10px; padding:8px 12px;
-                         cursor:pointer; list-style:none; flex-wrap:wrap; }
-.hx-issue-card summary::-webkit-details-marker { display:none; }
-.hx-issue-card[open] summary { background:#fafbfc; border-bottom:1px solid #eef2f7; }
-.hx-issue-ico { font-size:18px; flex:none; }
-.hx-issue-key { font:700 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-                color:#0f172a; }
-.hx-issue-msg { color:#334155; font-size:13.5px; flex:1 1 240px; min-width:0; }
-.hx-issue-meta { color:#6b7280; font-size:12px; white-space:nowrap; }
-.hx-issue-caret { color:#94a3b8; font-size:18px; transition:transform .15s; }
-.hx-issue-card[open] .hx-issue-caret { transform:rotate(180deg); }
-.hx-issue-body { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-                 gap:10px 18px; padding:10px 14px 12px 42px; background:#fff; }
-.hx-issue-body .lbl { font-size:11px; font-weight:700; color:var(--hx-muted);
-                      text-transform:uppercase; letter-spacing:.04em; }
-.hx-issue-body .val { font-size:13px; color:#334155; }
-.hx-issue-body .val code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas,
-                           monospace; font-weight:700; color:#0f172a; }
-.hx-issue-hint { grid-column:1/-1; background:#f8fafc; border:1px dashed #e2e8f0;
-                 border-radius:8px; padding:7px 10px; font-size:12.5px; color:#475569; }
-.hx-result { border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; margin:10px 0;
-             background:#fff; }
-.hx-evidence { background:#f8fafc; border:1px dashed #e2e8f0; border-radius:8px;
-               padding:8px 10px; margin-top:8px; font-size:12.5px; color:#475569; }
-.hx-names { margin:4px 0 0; padding-left:20px; }
-.hx-names li.bad { background:#fee2e2; color:#b91c1c; font-weight:600; border-radius:4px; }
-.hx-pre { margin:0; padding:8px 10px; background:#f8fafc; border:1px solid #eef2f7;
-          border-radius:8px; font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas,
-          monospace; max-height:220px; overflow:auto; white-space:pre; }
-/* ---- LaTeX table results: full result + per-table before/after ---- */
-.hx-tblock { border:1px solid #e5e7eb; border-radius:12px; background:#fff;
-             margin:10px 0; overflow:hidden; }
-.hx-tblock > summary { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-                       padding:10px 14px; cursor:pointer; list-style:none;
-                       background:#f8fafc; font-size:13.5px; }
-.hx-tblock > summary::-webkit-details-marker { display:none; }
-.hx-tblock[open] > summary { border-bottom:1px solid #eee; }
-.hx-tblock-title { font-weight:700; color:var(--hx-ink); }
-.hx-tblock > .hx-tblock-body { padding:12px 14px; }
-.hx-tblock .hx-pre { max-height:420px; }
-.hx-tcompare > summary { background:#fff; }
-.hx-tcompare-ico { font-size:16px; color:#64748b; transition:transform .15s; }
-.hx-tcompare[open] .hx-tcompare-ico { transform:rotate(90deg); }
-.hx-tpanes { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start; }
-@media (max-width: 860px) { .hx-tpanes { grid-template-columns:1fr; } }
-.hx-tpane { min-width:0; }
-.hx-tpane-label { display:inline-flex; align-items:center; gap:5px; font-size:12px;
-                  font-weight:700; padding:2px 10px; border-radius:999px; }
-.hx-tpane-label .material-icons { font-size:14px; }
-.hx-tpane-before { color:#b91c1c; background:#fef2f2; }
-.hx-tpane-after { color:#15803d; background:#f0fdf4; }
-.hx-tpane .hx-pre { max-height:360px; }
-.hx-tnote { font-size:12.5px; color:#475569; background:#f8fafc; border:1px dashed #e2e8f0;
-            border-radius:8px; padding:7px 10px; margin:8px 0 0; grid-column:1/-1; }
-/* ---- 3-step journey strips ---- */
-.hx-flow { display:flex; gap:6px; align-items:center; justify-content:center;
-           flex-wrap:wrap; margin-top:14px; }
-.hx-flow-step { display:inline-flex; align-items:center; gap:7px; padding:5px 13px;
-                border-radius:999px; background:#fff; border:1px solid var(--hx-line);
-                font-size:12.5px; font-weight:600; color:#475569; }
-.hx-flow-num { display:inline-flex; width:17px; height:17px; border-radius:50%;
-               align-items:center; justify-content:center; background:#4338ca; color:#fff;
-               font-size:11px; font-weight:800; }
-.hx-flow-arrow { color:#94a3b8; font-size:16px; }
-.hx-steps { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin:2px 0; }
-.hx-steps span.hx-step { display:inline-flex; align-items:center; gap:6px; font-size:12px;
-                         color:#64748b; font-weight:600; }
-.hx-steps b { display:inline-flex; width:16px; height:16px; border-radius:50%;
-              background:#eef2ff; color:#4338ca; align-items:center;
-              justify-content:center; font-size:10.5px; font-weight:800; }
-.hx-steps .material-icons { font-size:14px; color:#cbd5e1; }
-.hx-entry-card { border:1px solid #e5e7eb !important; border-radius:10px !important;
-                 box-shadow:none !important; }
-.q-tab { text-transform: none; }
-button:focus-visible, .q-field:focus-within { outline: 2px solid #6366f1; outline-offset: 1px; }
-"""
 
 # Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
 # button and its hidden <input type=file> have no accessible names.  Patch them
@@ -372,108 +105,54 @@ _QUASAR_A11Y_PATCH = """
 </script>
 """
 
-# Instant brand splash: painted by the initial HTML response, before NiceGUI's
-# websocket has rendered anything.  This is what makes first paint / LCP fast
-# (the page used to stay blank until the socket connected).  It removes itself
-# as soon as the real content exists.
-def _splash_html(active: str = "tools") -> str:
-    """Static first-paint skeleton that mirrors the real page.
+_SCROLL_RESTORE = """
+<script>
+(function () {
+  const positions = new Map();
+  const mounted = new WeakSet();
+  document.addEventListener('scroll', event => {
+    const el = event.target;
+    if (el.dataset?.hxScroll) positions.set(el.dataset.hxScroll, el.scrollTop);
+  }, true);
+  window.addEventListener('hx-reset-scroll', () => positions.clear());
+  const restore = () => {
+    document.querySelectorAll('[data-hx-scroll]').forEach(el => {
+      if (mounted.has(el)) return;
+      mounted.add(el);
+      const top = positions.get(el.dataset.hxScroll) || 0;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (el.isConnected) el.scrollTop = top;
+      }));
+    });
+  };
+  new MutationObserver(restore).observe(document.documentElement, {childList:true, subtree:true});
+  document.addEventListener('DOMContentLoaded', restore);
+})();
+</script>
+"""
 
-    The initial HTML is served before the websocket renders NiceGUI elements;
-    painting a real-looking skeleton (same hero title, hero sub, dropzone)
-    means the largest contentful paint happens at first paint instead of
-    several round-trips later. The splash is removed once the real
-    ``.nicegui-content`` has children, so the swap is visually seamless.
-    """
-    zh = {k: t("zh", k) for k in ("hero_badge", "upload_title", "upload_hint", "upload_button", "or_divider", "subtitle", "table_title", "table_paste_title", "table_note", "nav_tools", "nav_table")}
-    tools_cls = "hx-seg-item" + (" hx-seg-active" if active == "tools" else "")
-    table_cls = "hx-seg-item" + (" hx-seg-active" if active == "table" else "")
-    sub = zh["table_title"] if active == "table" else zh["subtitle"]
-    seg = (
-        '<div class="hx-seg">'
-        f'<span class="{tools_cls}"><span class="material-icons hx-seg-ico">book</span>'
-        f'{zh["nav_tools"]}</span>'
-        f'<span class="{table_cls}"><span class="material-icons hx-seg-ico">grid_on</span>'
-        f'{zh["nav_table"]}</span>'
-        '</div>'
-    )
-    if active == "table":
-        body = f"""
-  <main style="width:100%;max-width:1152px;margin:0 auto;padding:20px 16px 40px;">
-    <div class="hx-card" style="padding:20px;display:flex;flex-direction:column;gap:16px;">
-      <div style="display:flex;align-items:flex-start;gap:12px;">
-        <div class="hx-panel-icon"><span class="material-icons" style="font-size:19px;color:#4338ca;">grid_on</span></div>
-        <div>
-          <div class="hx-panel-title">{zh["table_paste_title"]}</div>
-          <div class="hx-tab-note" style="margin-top:2px;">{zh["table_note"]}</div>
-        </div>
-      </div>
-      <div style="height:200px;border-radius:10px;border:1px solid #e6e8f0;background:#fafbfc;"></div>
-    </div>
-  </main>"""
-    else:
-        body = f"""
-  <main style="width:100%;max-width:1152px;margin:0 auto;padding:20px 16px 40px;">
-    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:32px;">
-      <span class="hx-hero-badge"><span class="material-icons" style="font-size:14px;">lock</span> {zh["hero_badge"]}</span>
-      <div class="hx-hero-title">{zh["upload_title"]}</div>
-      <div class="hx-hero-sub">{zh["upload_hint"]}</div>
-    </div>
-    <div class="hx-card" style="max-width:768px;margin:16px auto 0;padding:24px;display:flex;flex-direction:column;gap:20px;">
-      <div style="border:2px dashed #c7d2fe;border-radius:14px;
-                  background:linear-gradient(180deg,#fafbff,#f4f6fd);padding:22px 16px;
-                  text-align:center;color:#0f172a;font-weight:700;font-size:14px;">{zh["upload_button"]}</div>
-      <div class="hx-divider">{zh["or_divider"]}</div>
-      <div style="height:44px;border-radius:10px;border:1px solid #e6e8f0;background:#fff;"></div>
-    </div>
-  </main>"""
-    return f"""
-<div id="hx-splash" role="status" aria-label="hx-bib loading">
-  <header class="hx-header">
-    <div style="display:flex;align-items:center;justify-content:space-between;
-                max-width:1152px;margin:0 auto;padding:0 16px;min-height:60px;">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <div class="hx-logo">hx</div>
-        <div>
-          <div class="hx-brand">hx-bib</div>
-          <div class="hx-brand-sub">{sub}</div>
-        </div>
-      </div>
-      <div style="display:flex;align-items:center;gap:4px;">{seg}</div>
-    </div>
-  </header>{body}
-  <div class="hx-splash-bar"></div>
+def _splash_html(active: str = "tools") -> str:
+    """A small loading overlay; never render a second, fake interface."""
+    return """
+<div id="hx-splash" role="status" aria-label="Loading hx-bib">
+  <div class="hx-logo">hx</div><span>hx-bib</span>
 </div>
 <style>
-#hx-splash {{ position:fixed; inset:0; z-index:9999; overflow:hidden;
-  background:#f6f7fb; transition:opacity .25s ease; }}
-#hx-splash .hx-header {{ position:static; }}
-#hx-splash .hx-logo {{ animation:hx-pulse 1.1s ease-in-out infinite; }}
-#hx-splash .hx-splash-bar {{ position:fixed; top:0; left:0; height:2px; width:100%;
-  background:linear-gradient(90deg,transparent,#4338ca,transparent); opacity:.7;
-  animation:hx-slide 1.2s ease-in-out infinite; }}
-@keyframes hx-pulse {{ 0%,100% {{ transform:scale(1); opacity:1; }} 50% {{ transform:scale(.94);
-  opacity:.75; }} }}
-@keyframes hx-slide {{ 0% {{ transform:translateX(-60%); }} 100% {{ transform:translateX(60%); }} }}
+#hx-splash { position:fixed; inset:0; z-index:9999; background:#f6f7fb;
+  display:flex; align-items:center; justify-content:center; gap:12px;
+  font-size:20px; font-weight:700; color:#3730a3; }
 </style>
 <script>
-(function () {{
-  function drop() {{
-    var el = document.getElementById('hx-splash');
-    if (!el || el.dataset.gone) return;
-    el.dataset.gone = '1';
-    el.style.opacity = '0';
-    setTimeout(function () {{ el.remove(); }}, 280);
-  }}
-  var t0 = Date.now();
-  var iv = setInterval(function () {{
-    var c = document.querySelector('.nicegui-content');
-    if ((c && c.children.length > 0) || Date.now() - t0 > 10000) {{
-      clearInterval(iv);
-      setTimeout(drop, 60);
-    }}
-  }}, 40);
-}})();
+(function () {
+  var start = Date.now();
+  var timer = setInterval(function () {
+    var content = document.querySelector('.hx-body');
+    if ((content && content.children.length) || Date.now() - start > 10000) {
+      clearInterval(timer);
+      document.getElementById('hx-splash')?.remove();
+    }
+  }, 40);
+})();
 </script>
 """
 
@@ -482,7 +161,7 @@ def _head_html(description: str) -> str:
     """Shared <head> payload: meta, styles, a11y patch, splash + lang attr."""
     return (
         f"<meta name='description' content='{description}'>"
-        f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}"
+        f"<style>{CSS}</style>{_QUASAR_A11Y_PATCH}{_SCROLL_RESTORE}"
         "<script>document.documentElement.lang='zh-CN';</script>"
     )
 
@@ -538,7 +217,8 @@ def changes_html(before: str, after: str, mode: str, lang: str) -> str:
     changes = diff_documents(parse_bibtex(before), parse_bibtex(after))
     diffs = changes.changed if mode == "changed" else changes.entries
     if not diffs:
-        return f'<div class="hx-tab-note" style="padding:12px 0">{_esc(t(lang, "no_changes"))}</div>'
+        message = "no_field_changes" if before != after else "no_changes"
+        return f'<div class="hx-tab-note" style="padding:12px 0">{_esc(t(lang, message))}</div>'
     rows = []
     for d in diffs:
         badges = []
@@ -680,6 +360,22 @@ def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
                 f'{_esc(t(lang, "no_changes"))}</div>')
     return "".join(blocks)
 
+
+BIB_EXAMPLE = """@inproceedings{demo2024,
+  title = {An Example Reference.},
+  author = {Doe, Jane and Smith, Alex and others},
+  year = {2024},
+  booktitle = {Proceedings of EMNLP},
+  pages = {12-20},
+  abstract = {Example text for trying field removal.}
+}
+@article{demo2023,
+  title = {A Second Example},
+  author = {Smith, Alex},
+  year = {2023},
+  journal = {Journal of Machine Learning Research}
+}
+"""
 
 TABLE_EXAMPLE = r"""\begin{table}[t]
 \centering
@@ -946,17 +642,22 @@ def _read_file_bytes(data: bytes) -> str:
         return data.decode("latin-1")
 
 
-def _copy_text(text: str, lang: str) -> None:
+async def _copy_text(text: str, lang: str) -> None:
     try:
-        ui.clipboard.write(text)
-        ui.notify(t(lang, "copied"), type="positive", position="top")
+        copied = await ui.run_javascript(
+            "return navigator.clipboard ? navigator.clipboard.writeText("
+            + json.dumps(text)
+            + ").then(() => true).catch(() => false) : false;"
+        )
+        ui.notify(t(lang, "copied" if copied else "copy_failed"),
+                  type="positive" if copied else "warning", position="bottom-right")
     except Exception:  # noqa: BLE001 - clipboard may be unavailable
-        ui.notify(t(lang, "copy_failed"), type="warning", position="top")
+        ui.notify(t(lang, "copy_failed"), type="warning", position="bottom-right")
 
 
 def _copy_handler(text: str, lang: str):
-    def handler() -> None:
-        _copy_text(text, lang)
+    async def handler() -> None:
+        await _copy_text(text, lang)
 
     return handler
 
@@ -1067,7 +768,7 @@ def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> N
 
 
 def _panel_head(icon: str, title: str, note: str) -> None:
-    with ui.row().classes("items-start gap-3 no-wrap"):
+    with ui.row().classes("hx-panel-head items-start gap-3 no-wrap"):
         with ui.element("div").classes("hx-panel-icon"):
             ui.icon(icon, size="20px")
         with ui.column().classes("gap-0"):
@@ -1129,8 +830,12 @@ def _build_page(initial_mode: str) -> None:
     ui.add_body_html(_splash_html(initial_mode))
     # AA-compliant primary (WCAG contrast on white; NiceGUI's default fails).
     ui.colors(primary="#4338ca", secondary="#0f766e", accent="#7c3aed")
+    ui.input.default_props("outlined dense")
+    ui.select.default_props("outlined dense options-dense")
+    ui.number.default_props("outlined dense")
     state = _new_state()
     state["mode"] = initial_mode
+    ui.context.client.on_delete(lambda: invalidate_results(state))
 
     def _apply_lang_attr() -> None:
         if _IN_SIM:
@@ -1150,6 +855,7 @@ def _build_page(initial_mode: str) -> None:
             if raw:
                 state["settings"] = _merge_settings(DEFAULT_SETTINGS, json.loads(raw))
                 state["lang"] = state["settings"].get("lang") or state["lang"]
+                _apply_lang_attr()
                 header.refresh()
                 body.refresh()
         except Exception:  # noqa: BLE001 - no JS/browser: keep defaults
@@ -1165,7 +871,7 @@ def _build_page(initial_mode: str) -> None:
                 f"localStorage.setItem({json.dumps(_SETTINGS_KEY)}, {encoded})"
             )
         except Exception:  # noqa: BLE001
-            pass
+            state["settings_dirty"] = True
 
     if not _IN_SIM:
         ui.timer(0.15, load_settings, once=True)
@@ -1189,7 +895,7 @@ def _build_page(initial_mode: str) -> None:
             try:
                 path = "/table" if mode == "table" else "/"
                 ui.run_javascript(
-                    f"history.pushState(null, '', {json.dumps(path)})"
+                    f"history.replaceState(null, '', {json.dumps(path)})"
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -1202,12 +908,14 @@ def _build_page(initial_mode: str) -> None:
             _header(state["lang"], state["mode"], toggle_lang, switch_mode)
         header()
 
-        with ui.element("main").classes("w-full max-w-6xl mx-auto px-4 pt-5 pb-10"):
+        with ui.element("main").classes("hx-main w-full mx-auto px-4 py-4"):
             # ---------------- body ----------------
             @ui.refreshable
             def body() -> None:
                 lang = state["lang"]
-                with ui.element("div").classes("w-full"):
+                with ui.element("div").classes("hx-body w-full").props(
+                    f'data-hx-scroll="root-{state["mode"]}"'
+                ):
                     if state["mode"] == "table":
                         _render_table_page(state, lang, body)
                         return
@@ -1219,7 +927,7 @@ def _build_page(initial_mode: str) -> None:
                         return
 
                     doc = parse_bibtex(state["text"])
-                    with ui.column().classes("w-full gap-4"):
+                    with ui.column().classes("hx-workspace w-full gap-3"):
                         _render_status_bar(state, lang, doc, body)
 
                         tab_defs = [
@@ -1238,34 +946,15 @@ def _build_page(initial_mode: str) -> None:
                             for key, label, icon in tab_defs:
                                 ui.tab(key, label, icon=icon).mark(f"tab-{key}")
 
-                        def tab_changed(value: str) -> None:
-                            state["tab"] = value
-                            # Keep the panel top pinned right below the sticky
-                            # tab bar when the user is scrolled into the
-                            # content — swinging between panels of very
-                            # different heights must not move what they see.
-                            if not _IN_SIM:
-                                try:
-                                    ui.run_javascript(
-                                        "(() => {"
-                                        " const bar = document.getElementById('hx-tabs-bar');"
-                                        " const panels = document.querySelector('.q-tab-panels');"
-                                        " if (!bar || !panels) return;"
-                                        " const b = bar.getBoundingClientRect().bottom;"
-                                        " const t = panels.getBoundingClientRect().top;"
-                                        " if (t < b) window.scrollBy(0, t - b - 8);"
-                                        "})()"
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    pass
+                        tabs.on_value_change(lambda e: state.update(tab=e.value))
 
-                        tabs.on_value_change(lambda e: tab_changed(e.value))
-
-                        with ui.tab_panels(tabs, value=state["tab"]).classes(
-                            "w-full bg-transparent"
+                        with ui.tab_panels(tabs, value=state["tab"], animated=False).classes(
+                            "hx-workspace-panels w-full bg-transparent"
                         ):
                             for key, _, _ in tab_defs:
-                                with ui.tab_panel(key).classes("p-0 pt-4"):
+                                with ui.tab_panel(key).classes("hx-panel-scroll p-0").props(
+                                    f'data-hx-scroll="panel-{key}"'
+                                ):
                                     _build_panel(key, state, lang, doc, body)
 
             body()
@@ -1282,9 +971,11 @@ def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> Non
 def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "") -> None:
     doc = parse_bibtex(text)
     if not doc.entries and not doc.strings and not doc.preamble:
-        ui.notify(t(lang, "invalid_bib"), type="warning", position="top")
+        ui.notify(t(lang, "invalid_bib"), type="warning", position="bottom-right")
         return
     invalidate_results(state)
+    if not _IN_SIM:
+        ui.run_javascript("window.dispatchEvent(new Event('hx-reset-scroll'))")
     state.update(
         text=text, baseline=text, name=name, path=path,
         history=[], pointer=0, verify_results=None, check_report=None, tab="format",
@@ -1293,7 +984,7 @@ def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "
     body.refresh()
     ui.notify(
         t(lang, "loaded").format(n=len(doc.entries), name=name),
-        type="positive", position="top",
+        type="positive", position="bottom-right",
     )
 
 
@@ -1309,73 +1000,85 @@ def _render_upload(state: dict, lang: str, body) -> None:
         ui.label(t(lang, "upload_hint")).classes("hx-hero-sub")
         ui.html(_flow_html(lang, ["flow_load", "flow_operate", "flow_export"]))
 
-    with ui.card().classes("hx-card w-full max-w-3xl mx-auto p-6 gap-5 mt-4"):
-        async def on_upload(e: events.UploadEventArguments) -> None:
-            data = e.file.read()
-            if inspect.isawaitable(data):
-                data = await data
-            _load_text(state, body, lang, _read_file_bytes(data),
-                       e.file.name or "uploaded.bib")
+    with ui.card().classes("hx-card hx-import w-full max-w-3xl mx-auto p-6 gap-4 mt-4"):
+        with ui.tabs(value=state["drafts"].get("import_method", "file")).classes("w-full hx-import-tabs").props("align=justify no-caps inline-label") as methods:
+            for key, icon in (("file", "upload_file"), ("paste", "content_paste"), ("path", "folder_open")):
+                ui.tab(key, t(lang, "import_" + key), icon=icon).mark("import-" + key)
+        methods.on_value_change(lambda e: state["drafts"].update(import_method=e.value))
+        with ui.tab_panels(methods, value=methods.value, animated=False).classes("hx-import-panels w-full bg-transparent"):
+            with ui.tab_panel("file").classes("p-0 gap-4"):
+                async def on_upload(e: events.UploadEventArguments) -> None:
+                    data = e.file.read()
+                    if inspect.isawaitable(data):
+                        data = await data
+                    _load_text(state, body, lang, _read_file_bytes(data),
+                               e.file.name or "uploaded.bib")
 
-        ui.upload(
-            label=t(lang, "upload_button"),
-            on_upload=on_upload,
-            auto_upload=True,
-            max_file_size=20_000_000,
-        ).props('accept=".bib,.bibtex,text/plain"').classes("hx-uploader")
+                ui.upload(
+                    label=t(lang, "upload_button"),
+                    on_upload=on_upload,
+                on_rejected=lambda: ui.notify(t(lang, "upload_rejected"), type="warning"),
+                    auto_upload=True,
+                    max_file_size=20_000_000,
+                ).props('accept=".bib,.bibtex,text/plain"').classes("hx-uploader")
+                ui.label(t(lang, "import_file_hint")).classes("hx-tab-note")
+            with ui.tab_panel("path").classes("p-0 gap-4"):
+                ui.label(t(lang, "import_path_hint")).classes("hx-tab-note")
+                with ui.row().classes("w-full items-stretch gap-2 no-wrap"):
+                    path_input = ui.input(placeholder=t(lang, "path_placeholder")).classes(
+                        "flex-1"
+                    ).props(f"outlined aria-label='{t(lang, 'or_path')}'").mark("path-input")
+                    _draft(path_input, state, "import_path")
 
-        ui.html(f'<div class="hx-divider">{_esc(t(lang, "or_divider"))}</div>')
+                    def load_path() -> None:
+                        raw = (path_input.value or "").strip().strip('"')
+                        if not raw:
+                            ui.notify(t(lang, "or_path"), type="warning", position="bottom-right")
+                            return
+                        try:
+                            text = _read_file_bytes(Path(raw).expanduser().read_bytes())
+                        except OSError as exc:
+                            ui.notify(str(exc), type="negative", position="bottom-right")
+                            return
+                        _load_text(state, body, lang, text, Path(raw).name,
+                                   str(Path(raw).expanduser()))
 
-        with ui.row().classes("w-full items-stretch gap-2 no-wrap"):
-            path_input = ui.input(placeholder=t(lang, "path_placeholder")).classes(
-                "flex-1"
-            ).props(f"outlined aria-label='{t(lang, 'or_path')}'").mark("path-input")
-            _draft(path_input, state, "import_path")
+                    ui.button(t(lang, "load"), icon="folder_open",
+                              on_click=load_path).props(
+                        "outline color=primary no-caps"
+                    ).mark("load-btn")
+                    path_input.on("keydown.enter", load_path)
+            with ui.tab_panel("paste").classes("p-0"):
+                with ui.column().classes("w-full gap-2"):
+                    ui.label(t(lang, "paste_title")).classes("text-sm font-semibold").style(
+                        "color:#1e293b"
+                    )
+                    paste_area = ui.textarea(
+                        placeholder=t(lang, "paste_placeholder")
+                    ).classes("w-full").props(
+                        f"outlined rows=5 aria-label='{t(lang, 'paste_placeholder')}'"
+                    ).style("font-family:ui-monospace,monospace;font-size:12.5px").mark(
+                        "paste-input"
+                    )
+                    _draft(paste_area, state, "import_text")
 
-            def load_path() -> None:
-                raw = (path_input.value or "").strip().strip('"')
-                if not raw:
-                    ui.notify(t(lang, "or_path"), type="warning", position="top")
-                    return
-                try:
-                    text = _read_file_bytes(Path(raw).expanduser().read_bytes())
-                except OSError as exc:
-                    ui.notify(str(exc), type="negative", position="top")
-                    return
-                _load_text(state, body, lang, text, Path(raw).name,
-                           str(Path(raw).expanduser()))
+                    def import_paste() -> None:
+                        raw = (paste_area.value or "").strip()
+                        if not raw:
+                            ui.notify(t(lang, "paste_empty"), type="warning", position="bottom-right")
+                            return
+                        _load_text(state, body, lang, raw + "\n", "pasted.bib")
 
-            ui.button(t(lang, "load"), icon="folder_open",
-                      on_click=load_path).props(
-                "outline color=primary no-caps"
-            ).mark("load-btn")
-            path_input.on("keydown.enter", load_path)
-
-        with ui.column().classes("w-full gap-2"):
-            ui.label(t(lang, "paste_title")).classes("text-sm font-semibold").style(
-                "color:#1e293b"
-            )
-            paste_area = ui.textarea(
-                placeholder=t(lang, "paste_placeholder")
-            ).classes("w-full").props(
-                f"outlined rows=5 aria-label='{t(lang, 'paste_placeholder')}'"
-            ).style("font-family:ui-monospace,monospace;font-size:12.5px").mark(
-                "paste-input"
-            )
-            _draft(paste_area, state, "import_text")
-
-            def import_paste() -> None:
-                raw = (paste_area.value or "").strip()
-                if not raw:
-                    ui.notify(t(lang, "paste_empty"), type="warning", position="top")
-                    return
-                _load_text(state, body, lang, raw + "\n", "pasted.bib")
-
-            with ui.row().classes("w-full justify-end"):
-                ui.button(t(lang, "paste_import"), icon="input",
-                          on_click=import_paste).props(
-                    "unelevated color=primary no-caps"
-                ).mark("paste-load")
+                    with ui.row().classes("w-full justify-end"):
+                        ui.button(t(lang, "paste_import"), icon="input",
+                                  on_click=import_paste).props(
+                            "unelevated color=primary no-caps"
+                        ).mark("paste-load")
+        with ui.row().classes("w-full items-center justify-between gap-2"):
+            ui.label(t(lang, "import_safe")).classes("hx-tab-note")
+            ui.button(t(lang, "try_example"), icon="science", on_click=lambda: _load_text(
+                state, body, lang, BIB_EXAMPLE, "example.bib",
+            )).props("flat color=primary no-caps").mark("bib-example")
 
     # ---- capability strip / secondary entrance ----
     with ui.column().classes("w-full items-center gap-3 mt-5"):
@@ -1414,6 +1117,23 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
 # LaTeX table formatter page (/table)
 # ---------------------------------------------------------------------------
 def _render_table_page(state: dict, lang: str, body) -> None:
+    result_widgets = {}
+
+    def update_freshness() -> None:
+        res = state["result"]
+        fresh = res is not None and res[0] == state["source_text"] and (
+            state.get("result_options") == (state["amp"], state["blank_lines"], state["row_indent"])
+        )
+        for key in ("copy", "download"):
+            if key in result_widgets:
+                result_widgets[key].set_enabled(fresh)
+        if "status" in result_widgets:
+            result_widgets["status"].set_text(t(lang, "table_current" if fresh else "table_stale"))
+
+    def update_input(key: str, value) -> None:
+        state[key] = value
+        update_freshness()
+
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("grid_on", t(lang, "table_title"), t(lang, "table_note"))
         ui.label(t(lang, "table_paste_title")).classes("hx-tab-note")
@@ -1426,12 +1146,12 @@ def _render_table_page(state: dict, lang: str, body) -> None:
         ).mark("table-input")
         if state["source_text"]:
             source.value = state["source_text"]
-        source.on_value_change(lambda e: state.update(source_text=e.value or ""))
+        source.on_value_change(lambda e: update_input("source_text", e.value or ""))
 
         def run_format() -> None:
             text = state["source_text"] or (source.value or "")
             if not text.strip():
-                ui.notify(t(lang, "table_empty"), type="warning", position="top")
+                ui.notify(t(lang, "table_empty"), type="warning", position="bottom-right")
                 return
             opts = TableFormatOptions(
                 amp_style=state["amp"],
@@ -1439,7 +1159,8 @@ def _render_table_page(state: dict, lang: str, body) -> None:
                 row_indent=state["row_indent"],
             )
             state["result"] = (text, format_tables(text, opts))
-            body.refresh()
+            state["result_options"] = (state["amp"], state["blank_lines"], state["row_indent"])
+            output.refresh()
 
         with ui.element("div").classes("hx-optbar w-full"):
             with ui.row().classes("items-center gap-3 no-wrap"):
@@ -1455,17 +1176,17 @@ def _render_table_page(state: dict, lang: str, body) -> None:
                     "dense unelevated no-caps inline toggle-color=white "
                     "toggle-text-color=primary"
                 ).mark("table-amp")
-                amp.on_value_change(lambda e: state.update(amp=e.value or "space"))
+                amp.on_value_change(lambda e: update_input("amp", e.value or "space"))
             blank = ui.switch(
                 t(lang, "table_blank"), value=state["blank_lines"],
             ).mark("table-blank")
-            blank.on_value_change(lambda e: state.update(blank_lines=bool(e.value)))
+            blank.on_value_change(lambda e: update_input("blank_lines", bool(e.value)))
             indent = ui.number(
                 t(lang, "table_indent_label"), value=state["row_indent"],
                 min=0, max=16, step=1,
             ).classes("w-52").props("dense outlined").mark("table-indent")
             indent.on_value_change(
-                lambda e: state.update(row_indent=int(e.value or 0))
+                lambda e: update_input("row_indent", max(0, min(16, int(e.value or 0))))
             )
 
         def load_example() -> None:
@@ -1485,55 +1206,62 @@ def _render_table_page(state: dict, lang: str, body) -> None:
 
         source.on("keydown.ctrl.enter", run_format)
 
-    with ui.card().classes("hx-card w-full p-5 gap-3"):
-        res = state["result"]
-        if res is None:
-            ui.html(
-                f'<div class="hx-empty">{_esc(t(lang, "table_empty_preview"))}</div>'
-            )
-            return
-        before, result = res
-        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
-            with ui.row().classes("items-center gap-2 flex-wrap"):
+    @ui.refreshable
+    def output() -> None:
+        with ui.card().classes("hx-card w-full p-5 gap-3"):
+            res = state["result"]
+            if res is None:
                 ui.html(
-                    f'<span class="hx-chip" style="color:#4338ca;background:#4338ca1a">'
-                    f'{_esc(t(lang, "table_summary").format(tab=result.tables, rows=result.rows))}'
-                    f'</span>'
+                    f'<div class="hx-empty">{_esc(t(lang, "table_empty_preview"))}</div>'
                 )
-                if result.tables and result.text == before:
+                return
+            before, result = res
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+                with ui.row().classes("items-center gap-2 flex-wrap"):
                     ui.html(
-                        f'<span class="hx-chip" style="color:#475569;background:#f1f5f9">'
-                        f'{_esc(t(lang, "table_unchanged"))}</span>'
+                        f'<span class="hx-chip" style="color:#4338ca;background:#4338ca1a">'
+                        f'{_esc(t(lang, "table_summary").format(tab=result.tables, rows=result.rows))}'
+                        f'</span>'
                     )
-            with ui.row().classes("items-center gap-2"):
-                ui.button(
-                    t(lang, "table_copy_result"), icon="content_copy",
-                    on_click=_copy_handler(result.text, lang),
-                ).props("outline color=primary no-caps").mark("table-copy")
-                ui.button(
-                    t(lang, "table_download"), icon="download",
-                    on_click=lambda: ui.download(
-                        result.text.encode("utf-8"), "tables.tex"
-                    ),
-                ).props("outline no-caps").mark("table-download")
-        if result.tables == 0:
-            ui.html(f'<div class="hx-empty">{_esc(t(lang, "table_no_tables"))}</div>')
-        else:
-            # Result first: the formatted text is the main output…
-            ui.html(table_result_html(result.text, lang)).classes("w-full")
-            # …then an opt-in, per-table before/after view for checking.
-            if result.text != before:
-                ui.label(t(lang, "table_compare_title")).classes(
-                    "hx-tab-note font-bold"
-                )
-                ui.html(table_compare_html(before, result.text, lang)).classes("w-full")
-        if result.warnings:
-            with ui.expansion(
-                t(lang, "table_warnings").format(n=len(result.warnings)), icon="info",
-            ).classes("w-full"):
-                for warning in result.warnings:
-                    ui.label(f"• {warning}").classes("hx-tab-note")
+                    if result.tables and result.text == before:
+                        ui.html(
+                            f'<span class="hx-chip" style="color:#475569;background:#f1f5f9">'
+                            f'{_esc(t(lang, "table_unchanged"))}</span>'
+                        )
+                with ui.row().classes("items-center gap-2"):
+                    result_widgets["copy"] = ui.button(
+                        t(lang, "table_copy_result"), icon="content_copy",
+                        on_click=_copy_handler(result.text, lang),
+                    ).props("outline color=primary no-caps").mark("table-copy")
+                    result_widgets["download"] = ui.button(
+                        t(lang, "table_download"), icon="download",
+                        on_click=lambda: ui.download(
+                            result.text.encode("utf-8"), "tables.tex"
+                        ),
+                    ).props("outline no-caps").mark("table-download")
+            result_widgets["status"] = ui.label("").classes("hx-tab-note").style("min-height:20px")
+            update_freshness()
+            if result.tables == 0:
+                ui.html(f'<div class="hx-empty">{_esc(t(lang, "table_no_tables"))}</div>')
+            else:
+                # Result first: the formatted text is the main output…
+                ui.html(table_result_html(result.text, lang)).classes("w-full")
+                # …then an opt-in, per-table before/after view for checking.
+                if result.text != before:
+                    ui.label(t(lang, "table_compare_title")).classes(
+                        "hx-tab-note font-bold"
+                    )
+                    ui.html(table_compare_html(before, result.text, lang)).classes("w-full")
+            if result.warnings:
+                with ui.expansion(
+                    t(lang, "table_warnings").format(n=len(result.warnings)), icon="info",
+                ).classes("w-full"):
+                    for warning in result.warnings:
+                        ui.label(f"• {warning}").classes("hx-tab-note")
 
+
+
+    output()
 
 # ---------------------------------------------------------------------------
 # Status bar (shared working copy)
@@ -1542,7 +1270,7 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
     changed = _changed_count(state["baseline"], state["text"])
 
     def notify_unavailable(key: str) -> None:
-        ui.notify(t(lang, key), type="warning", position="top")
+        ui.notify(t(lang, key), type="warning", position="bottom-right")
 
     def do_undo() -> None:
         if state["pointer"] == 0:
@@ -1550,7 +1278,7 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
             return
         label = state["history"][state["pointer"] - 1]["label"]
         _jump_stage(state, state["pointer"] - 1)
-        ui.notify(t(lang, "undo_done").format(label=label), position="top")
+        ui.notify(t(lang, "undo_done").format(label=label), position="bottom-right")
         body.refresh()
 
     def do_redo() -> None:
@@ -1559,14 +1287,14 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
             return
         label = state["history"][state["pointer"]]["label"]
         _jump_stage(state, state["pointer"] + 1)
-        ui.notify(t(lang, "redo_done").format(label=label), position="top")
+        ui.notify(t(lang, "redo_done").format(label=label), position="bottom-right")
         body.refresh()
 
     def do_reset() -> None:
         _confirm(
             lang, t(lang, "reset_title"), t(lang, "reset_body"),
             lambda: (_jump_stage(state, 0), body.refresh(),
-                     ui.notify(t(lang, "reset_done"), position="top")),
+                     ui.notify(t(lang, "reset_done"), position="bottom-right")),
         )
 
     def do_close() -> None:
@@ -1579,9 +1307,9 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
         _confirm(lang, t(lang, "close_title"), t(lang, "close_body"), close)
 
     with ui.card().classes("hx-card hx-status w-full px-4 py-3 gap-2"):
-        with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+        with ui.row().classes("hx-status-meta w-full items-center gap-3 flex-wrap"):
             ui.icon("description", size="20px").style("color:#4338ca")
-            ui.label(state["name"]).classes("font-semibold").mark("file-name")
+            ui.label(state["name"]).classes("hx-filename font-semibold").tooltip(state["name"]).mark("file-name")
             ui.label(t(lang, "entries_loaded").format(n=len(doc.entries))).classes(
                 "hx-tab-note text-sm"
             )
@@ -1602,12 +1330,13 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
                     "hx-chip"
                 ).style("background:#fef3c7;color:#92400e")
             elif state["pointer"]:
-                ui.label(t(lang, "same_as_original")).classes("hx-chip").style(
+                ui.label(t(lang, "same_as_original" if state["text"] == state["baseline"]
+                           else "nonfield_changes")).classes("hx-chip").style(
                     "background:#f1f5f9;color:#475569"
                 )
 
         # clickable stage history: jump to any applied step (or the original)
-        with ui.row().classes("w-full items-center gap-1 flex-wrap"):
+        with ui.row().classes("hx-history w-full items-center gap-1 no-wrap"):
             ui.icon("history", size="16px").style("color:#94a3b8;flex:none")
 
             def jump(target: int) -> None:
@@ -1650,14 +1379,14 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
 
             def save_to_path() -> None:
                 if not state["path"]:
-                    ui.notify(t(lang, "no_path"), type="warning", position="top")
+                    ui.notify(t(lang, "no_path"), type="warning", position="bottom-right")
                     return
                 try:
                     Path(state["path"]).write_text(state["text"], encoding="utf-8")
                     ui.notify(t(lang, "saved").format(path=state["path"]),
-                              type="positive", position="top")
+                              type="positive", position="bottom-right")
                 except OSError as exc:
-                    ui.notify(str(exc), type="negative", position="top")
+                    ui.notify(str(exc), type="negative", position="bottom-right")
 
             ui.button(t(lang, "save_file"), icon="save", on_click=save_to_path).props(
                 "flat dense"
@@ -1684,7 +1413,7 @@ def _build_panel(key: str, state: dict, lang: str, doc, refresh_body: Callable) 
 
 
 def _preview_area(lang: str, state: dict, key: str, refresh_body) -> ui.column:
-    col = ui.column().classes("w-full gap-2")
+    col = ui.column().classes("hx-preview w-full gap-2").props(f'data-hx-scroll="preview-{key}"')
     saved = state["previews"].get(key)
     if saved and preview_is_current(state, saved["revision"], saved["before"]):
         _render_preview(col, state, lang, saved["before"], saved["result_text"],
@@ -1692,8 +1421,11 @@ def _preview_area(lang: str, state: dict, key: str, refresh_body) -> ui.column:
                         revision=saved["revision"])
         return col
     with col:
-        with ui.element("div").classes("hx-empty"):
-            ui.label(t(lang, "empty_preview"))
+        with ui.card().classes("hx-card w-full p-5 gap-3"):
+            _panel_head("preview", t(lang, "preview_title"), t(lang, "preview_hint"))
+            with ui.element("div").classes("hx-empty"):
+                ui.icon("difference", size="32px").style("color:#a5b4fc")
+                ui.label(t(lang, "empty_preview"))
     return col
 
 
@@ -1751,7 +1483,7 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                         {"list": t(lang, "view_list"),
                          "diff": t(lang, "view_diff"),
                          "entries": t(lang, "view_entries")},
-                        value="list",
+                        value=state["drafts"].get("preview_view", "list"),
                     ).props(
                         "dense unelevated no-caps toggle-color=white "
                         "toggle-text-color=primary"
@@ -1759,13 +1491,13 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                     mode_toggle = ui.toggle(
                         {"changed": t(lang, "changes_only"),
                          "all": t(lang, "show_all")},
-                        value="changed",
+                        value=state["drafts"].get("preview_mode", "changed"),
                     ).props(
                         "dense unelevated no-caps toggle-color=white "
                         "toggle-text-color=primary"
                     ).mark("diff-mode")
 
-            content_container = ui.column().classes("w-full")
+            content_container = ui.column().classes("hx-preview-content w-full")
 
             def render() -> None:
                 view = view_toggle.value or "list"
@@ -1789,11 +1521,11 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                         _render_entry_cards(ui.column().classes("w-full gap-2"),
                                             result_text, opts, lang)
 
-            view_toggle.on_value_change(lambda _: render())
-            mode_toggle.on_value_change(lambda _: render())
+            view_toggle.on_value_change(lambda e: (state["drafts"].update(preview_view=e.value), render()))
+            mode_toggle.on_value_change(lambda e: (state["drafts"].update(preview_mode=e.value), render()))
             render()
 
-            with ui.row().classes("w-full justify-end gap-2 flex-wrap"):
+            with ui.row().classes("hx-preview-actions w-full justify-end gap-2 flex-wrap"):
                 def apply_result() -> None:
                     if not preview_is_current(state, revision, before):
                         ui.notify(t(lang, "stale_preview"), type="warning")
@@ -1802,7 +1534,7 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                         return
                     ui.notify(
                         t(lang, "step_applied").format(n=state["pointer"], label=label),
-                        type="positive", position="top",
+                        type="positive", position="bottom-right",
                     )
                     if refresh_body is not None:
                         refresh_body.refresh()
@@ -1824,42 +1556,45 @@ def _render_preview(container: ui.column, state: dict, lang: str,
 
 # -- format -----------------------------------------------------------------
 def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("brush", t(lang, "tab_format"), t(lang, "format_note"))
-        ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
-        with ui.row().classes("gap-4 items-end flex-wrap"):
-            indent = _bind(ui.select(
-                {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
-                value=_opt(state, "format", "indent") or "4",
-                label=t(lang, "opt_indent"),
-            ).classes("w-36"), state, "format", "indent")
-            field_order = _bind(ui.select(
-                {"standard": t(lang, "order_standard"),
-                 "alphabetical": t(lang, "order_alpha"),
-                 "keep": t(lang, "order_keep")},
-                value=_opt(state, "format", "field_order") or "standard",
-                label=t(lang, "opt_order"),
-            ).classes("w-44"), state, "format", "field_order")
-            sort = _bind(ui.select(
-                {"none": t(lang, "sort_none"), "key": "key", "year": "year",
-                 "type": "type", "title": "title"},
-                value=_opt(state, "format", "sort") or "none",
-                label=t(lang, "opt_sort"),
-            ).classes("w-36"), state, "format", "sort")
-            align_equals = _bind(ui.switch(t(lang, "opt_align_equals"),
-                                           value=bool(_opt(state, "format", "align_equals"))),
-                                 state, "format", "align_equals")
-            trailing = _bind(ui.switch(t(lang, "opt_trailing_comma"),
-                                       value=bool(_opt(state, "format", "trailing_comma"))),
-                             state, "format", "trailing_comma")
-            drop_comments = _bind(ui.switch(t(lang, "opt_drop_comments"),
-                                            value=bool(_opt(state, "format", "drop_comments"))),
-                                  state, "format", "drop_comments")
+    with ui.element("div").classes("hx-operation-grid w-full"):
+        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
+            'data-hx-scroll="options-format"'
+        ):
+            _panel_head("brush", t(lang, "tab_format"), t(lang, "format_note"))
+            ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
+            with ui.row().classes("gap-4 items-end flex-wrap"):
+                indent = _bind(ui.select(
+                    {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
+                    value=_opt(state, "format", "indent") or "4",
+                    label=t(lang, "opt_indent"),
+                ).classes("w-36"), state, "format", "indent")
+                field_order = _bind(ui.select(
+                    {"standard": t(lang, "order_standard"),
+                     "alphabetical": t(lang, "order_alpha"),
+                     "keep": t(lang, "order_keep")},
+                    value=_opt(state, "format", "field_order") or "standard",
+                    label=t(lang, "opt_order"),
+                ).classes("w-44"), state, "format", "field_order")
+                sort = _bind(ui.select(
+                    {"none": t(lang, "sort_none"), "key": "key", "year": "year",
+                     "type": "type", "title": "title"},
+                    value=_opt(state, "format", "sort") or "none",
+                    label=t(lang, "opt_sort"),
+                ).classes("w-36"), state, "format", "sort")
+                align_equals = _bind(ui.switch(t(lang, "opt_align_equals"),
+                                               value=bool(_opt(state, "format", "align_equals"))),
+                                     state, "format", "align_equals")
+                trailing = _bind(ui.switch(t(lang, "opt_trailing_comma"),
+                                           value=bool(_opt(state, "format", "trailing_comma"))),
+                                 state, "format", "trailing_comma")
+                drop_comments = _bind(ui.switch(t(lang, "opt_drop_comments"),
+                                                value=bool(_opt(state, "format", "drop_comments"))),
+                                      state, "format", "drop_comments")
 
-        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-            "unelevated color=primary"
-        ).mark("format-preview")
+            ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+            run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
+                "unelevated color=primary"
+            ).mark("format-preview")
         preview = _preview_area(lang, state, "format", refresh_body)
 
         async def run_format() -> None:
@@ -1884,63 +1619,66 @@ def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
 def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
     common = ["abstract", "keywords", "url", "doi", "isbn", "issn", "month",
               "note", "address", "editor", "publisher", "eprint", "volume", "number"]
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("cleaning_services", t(lang, "tab_clean"), t(lang, "clean_note"))
-        ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
+    with ui.element("div").classes("hx-operation-grid w-full"):
+        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
+            'data-hx-scroll="options-clean"'
+        ):
+            _panel_head("cleaning_services", t(lang, "tab_clean"), t(lang, "clean_note"))
+            ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
 
-        ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
-        remove_select = _bind(ui.select(
-            common, value=list(_opt(state, "clean", "remove") or []), multiple=True,
-            label=t(lang, "remove_fields"),
-        ).props("use-chips outlined dense").classes("w-full"),
-            state, "clean", "remove")
-        with ui.row().classes("gap-4 items-end flex-wrap"):
-            custom_remove = ui.input(t(lang, "custom_remove")).classes("w-72")
-            add_key = ui.input(t(lang, "add_key")).classes("w-44")
-            add_value = ui.input(t(lang, "add_value")).classes("w-72")
-            overwrite = ui.switch(t(lang, "overwrite"))
-            for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
-                                ("add_value", add_value), ("overwrite", overwrite)):
-                _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
-        with ui.row().classes("gap-6 flex-wrap mt-1"):
-            drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
-                                         value=bool(_opt(state, "clean", "drop_empty"))),
-                               state, "clean", "drop_empty")
-            drop_others = _bind(ui.switch(t(lang, "drop_others"),
-                                          value=bool(_opt(state, "clean", "drop_others"))),
-                                state, "clean", "drop_others")
-            months = _bind(ui.switch(t(lang, "months"),
-                                     value=bool(_opt(state, "clean", "months"))),
-                           state, "clean", "months")
-            title_period = _bind(ui.switch(t(lang, "title_period"),
-                                           value=bool(_opt(state, "clean", "title_period"))),
-                                 state, "clean", "title_period")
-            dedupe = _bind(ui.switch(t(lang, "dedupe"),
-                                     value=bool(_opt(state, "clean", "dedupe"))),
-                           state, "clean", "dedupe")
-            keep_last = _bind(ui.switch(t(lang, "keep_last"),
-                                        value=bool(_opt(state, "clean", "keep_last"))),
-                              state, "clean", "keep_last")
+            ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
+            remove_select = _bind(ui.select(
+                common, value=list(_opt(state, "clean", "remove") or []), multiple=True,
+                label=t(lang, "remove_fields"),
+            ).props("use-chips outlined dense").classes("w-full"),
+                state, "clean", "remove")
+            with ui.row().classes("gap-4 items-end flex-wrap"):
+                custom_remove = ui.input(t(lang, "custom_remove")).classes("w-72")
+                add_key = ui.input(t(lang, "add_key")).classes("w-44")
+                add_value = ui.input(t(lang, "add_value")).classes("w-72")
+                overwrite = ui.switch(t(lang, "overwrite"))
+                for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
+                                    ("add_value", add_value), ("overwrite", overwrite)):
+                    _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
+            with ui.row().classes("gap-6 flex-wrap mt-1"):
+                drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
+                                             value=bool(_opt(state, "clean", "drop_empty"))),
+                                   state, "clean", "drop_empty")
+                drop_others = _bind(ui.switch(t(lang, "drop_others"),
+                                              value=bool(_opt(state, "clean", "drop_others"))),
+                                    state, "clean", "drop_others")
+                months = _bind(ui.switch(t(lang, "months"),
+                                         value=bool(_opt(state, "clean", "months"))),
+                               state, "clean", "months")
+                title_period = _bind(ui.switch(t(lang, "title_period"),
+                                               value=bool(_opt(state, "clean", "title_period"))),
+                                     state, "clean", "title_period")
+                dedupe = _bind(ui.switch(t(lang, "dedupe"),
+                                         value=bool(_opt(state, "clean", "dedupe"))),
+                               state, "clean", "dedupe")
+                keep_last = _bind(ui.switch(t(lang, "keep_last"),
+                                            value=bool(_opt(state, "clean", "keep_last"))),
+                                  state, "clean", "keep_last")
 
-        ui.label(t(lang, "advanced")).classes("text-sm font-semibold mt-2")
-        with ui.row().classes("gap-6 flex-wrap"):
-            doi = _bind(ui.switch(t(lang, "opt_doi"),
-                                  value=bool(_opt(state, "clean", "doi"))),
-                        state, "clean", "doi")
-            pages = _bind(ui.switch(t(lang, "opt_pages"),
-                                    value=bool(_opt(state, "clean", "pages"))),
-                          state, "clean", "pages")
-            clean_urls = _bind(ui.switch(t(lang, "opt_clean_urls"),
-                                         value=bool(_opt(state, "clean", "clean_urls"))),
-                               state, "clean", "clean_urls")
-            dedupe_title = _bind(ui.switch(t(lang, "opt_dedupe_title"),
-                                           value=bool(_opt(state, "clean", "dedupe_title"))),
-                                 state, "clean", "dedupe_title")
+            ui.label(t(lang, "advanced")).classes("text-sm font-semibold mt-2")
+            with ui.row().classes("gap-6 flex-wrap"):
+                doi = _bind(ui.switch(t(lang, "opt_doi"),
+                                      value=bool(_opt(state, "clean", "doi"))),
+                            state, "clean", "doi")
+                pages = _bind(ui.switch(t(lang, "opt_pages"),
+                                        value=bool(_opt(state, "clean", "pages"))),
+                              state, "clean", "pages")
+                clean_urls = _bind(ui.switch(t(lang, "opt_clean_urls"),
+                                             value=bool(_opt(state, "clean", "clean_urls"))),
+                                   state, "clean", "clean_urls")
+                dedupe_title = _bind(ui.switch(t(lang, "opt_dedupe_title"),
+                                               value=bool(_opt(state, "clean", "dedupe_title"))),
+                                     state, "clean", "dedupe_title")
 
-        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-            "unelevated color=primary"
-        ).mark("clean-preview")
+            ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+            run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
+                "unelevated color=primary"
+            ).mark("clean-preview")
         preview = _preview_area(lang, state, "clean", refresh_body)
 
         def compute(before: str, values: dict) -> str:
@@ -1996,74 +1734,77 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
 
 # -- normalize --------------------------------------------------------------
 def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("auto_fix_high", t(lang, "tab_normalize"), t(lang, "normalize_note"))
-        ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
+    with ui.element("div").classes("hx-operation-grid w-full"):
+        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
+            'data-hx-scroll="options-normalize"'
+        ):
+            _panel_head("auto_fix_high", t(lang, "tab_normalize"), t(lang, "normalize_note"))
+            ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
 
-        with ui.element("div").classes("hx-optbar w-full items-start"):
-            with ui.column().classes("gap-1"):
-                ui.label(t(lang, "venue_style")).classes("hx-optlabel")
-                venue_style = _bind(ui.toggle(
-                    {"abbr": t(lang, "style_abbr_short"),
-                     "full": t(lang, "style_full_short"),
-                     "family": t(lang, "style_family_short"),
-                     "keep": t(lang, "style_keep_short")},
-                    value=_opt(state, "normalize", "venue_style") or "abbr",
-                ).props(
-                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
-                ).mark("normalize-venue-style"),
-                    state, "normalize", "venue_style")
-                example = ui.label("").classes("hx-style-ex")
+            with ui.element("div").classes("hx-optbar w-full items-start"):
+                with ui.column().classes("gap-1"):
+                    ui.label(t(lang, "venue_style")).classes("hx-optlabel")
+                    venue_style = _bind(ui.toggle(
+                        {"abbr": t(lang, "style_abbr_short"),
+                         "full": t(lang, "style_full_short"),
+                         "family": t(lang, "style_family_short"),
+                         "keep": t(lang, "style_keep_short")},
+                        value=_opt(state, "normalize", "venue_style") or "abbr",
+                    ).props(
+                        "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                    ).mark("normalize-venue-style"),
+                        state, "normalize", "venue_style")
+                    example = ui.label("").classes("hx-style-ex")
 
-                def update_example() -> None:
-                    style = venue_style.value or "abbr"
-                    if style == "keep":
-                        example.set_text(t(lang, "style_example_keep"))
-                    else:
-                        venue = get_venue("EMNLP")
-                        example.set_text(t(lang, "style_example").format(
-                            render_venue(venue, style=style)
-                            if venue else "…"
-                        ))
+                    def update_example() -> None:
+                        style = venue_style.value or "abbr"
+                        if style == "keep":
+                            example.set_text(t(lang, "style_example_keep"))
+                        else:
+                            venue = get_venue("EMNLP")
+                            example.set_text(t(lang, "style_example").format(
+                                render_venue(venue, style=style)
+                                if venue else "…"
+                            ))
 
-                update_example()
-                venue_style.on_value_change(lambda _: update_example())
+                    update_example()
+                    venue_style.on_value_change(lambda _: update_example())
 
-                def goto_venues() -> None:
-                    state["tab"] = "venues"
-                    refresh_body.refresh()
+                    def goto_venues() -> None:
+                        state["tab"] = "venues"
+                        refresh_body.refresh()
 
-                ui.button(t(lang, "goto_venues"), icon="stadium",
-                          on_click=goto_venues).props(
-                    "flat dense no-caps"
-                ).classes("hx-lang self-start").style("margin-left:-8px")
-            with ui.column().classes("gap-1"):
-                ui.label(t(lang, "arxiv_style")).classes("hx-optlabel")
-                arxiv_style = _bind(ui.toggle(
-                    {"journal": t(lang, "arxiv_journal_short"),
-                     "misc": t(lang, "arxiv_misc_short"),
-                     "keep": t(lang, "style_keep_short")},
-                    value=_opt(state, "normalize", "arxiv_style") or "journal",
-                ).props(
-                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
-                ).mark("normalize-arxiv-style"),
-                    state, "normalize", "arxiv_style")
-            with ui.column().classes("gap-2"):
-                ui.label(t(lang, "normalize_fixes")).classes("hx-optlabel")
-                fix_types = _bind(ui.switch(t(lang, "fix_types"),
-                                            value=bool(_opt(state, "normalize", "fix_types"))),
-                                  state, "normalize", "fix_types")
-                drop_volume = _bind(ui.switch(t(lang, "drop_arxiv_volume"),
-                                              value=bool(_opt(state, "normalize", "drop_arxiv_volume"))),
-                                    state, "normalize", "drop_arxiv_volume")
-                add_url = _bind(ui.switch(t(lang, "add_arxiv_url"),
-                                          value=bool(_opt(state, "normalize", "add_arxiv_url"))),
-                                state, "normalize", "add_arxiv_url")
+                    ui.button(t(lang, "goto_venues"), icon="stadium",
+                              on_click=goto_venues).props(
+                        "flat dense no-caps"
+                    ).classes("hx-lang self-start").style("margin-left:-8px")
+                with ui.column().classes("gap-1"):
+                    ui.label(t(lang, "arxiv_style")).classes("hx-optlabel")
+                    arxiv_style = _bind(ui.toggle(
+                        {"journal": t(lang, "arxiv_journal_short"),
+                         "misc": t(lang, "arxiv_misc_short"),
+                         "keep": t(lang, "style_keep_short")},
+                        value=_opt(state, "normalize", "arxiv_style") or "journal",
+                    ).props(
+                        "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                    ).mark("normalize-arxiv-style"),
+                        state, "normalize", "arxiv_style")
+                with ui.column().classes("gap-2"):
+                    ui.label(t(lang, "normalize_fixes")).classes("hx-optlabel")
+                    fix_types = _bind(ui.switch(t(lang, "fix_types"),
+                                                value=bool(_opt(state, "normalize", "fix_types"))),
+                                      state, "normalize", "fix_types")
+                    drop_volume = _bind(ui.switch(t(lang, "drop_arxiv_volume"),
+                                                  value=bool(_opt(state, "normalize", "drop_arxiv_volume"))),
+                                        state, "normalize", "drop_arxiv_volume")
+                    add_url = _bind(ui.switch(t(lang, "add_arxiv_url"),
+                                              value=bool(_opt(state, "normalize", "add_arxiv_url"))),
+                                    state, "normalize", "add_arxiv_url")
 
-        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-            "unelevated color=primary"
-        ).mark("normalize-preview")
+            ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+            run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
+                "unelevated color=primary"
+            ).mark("normalize-preview")
         preview = _preview_area(lang, state, "normalize", refresh_body)
 
         async def run_normalize() -> None:
@@ -2281,7 +2022,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
             if state["progress"]["running"]:
                 return
             before, revision = state["text"], state["revision"]
-            keys = re.split(r"[,\s]+", (only.value or "").strip()) if only.value else []
+            keys = [key for key in re.split(r"[,\s]+", (only.value or "").strip()) if key]
             entries = list(parse_bibtex(before).entries)
             if keys:
                 missing = set(keys) - {e.key for e in entries}
@@ -2291,7 +2032,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                     return
                 entries = [e for e in entries if e.key in set(keys)]
             if not entries:
-                ui.notify(t(lang, "no_results"), type="warning", position="top")
+                ui.notify(t(lang, "no_results"), type="warning", position="bottom-right")
                 return
 
             n_workers = max(1, min(8, int(workers.value or 1)))
@@ -2348,7 +2089,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
             state["verify_filter"] = "ALL"
             if control.cancelled.is_set():
                 ui.notify(t(lang, "stopped_partial").format(n=len(results)),
-                          type="warning", position="top")
+                          type="warning", position="bottom-right")
             else:
                 counts: Dict[str, int] = {}
                 for res in results:
@@ -2359,7 +2100,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                         n=len(results),
                         bad=counts.get("FAIL", 0) + counts.get("WARN", 0),
                     ),
-                    type=color, position="top",
+                    type=color, position="bottom-right",
                 )
             show_results_safe()
 

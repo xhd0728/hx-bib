@@ -48,6 +48,7 @@ async def main() -> None:
         await user.should_see(marker="browse-venues")
         print("✓ venues browser opens without a file")
 
+        user.find(marker="import-path").click()
         user.find(marker="path-input").type(str(SAMPLE))
         user.find(marker="load-btn").click()
         await settle()
@@ -63,12 +64,22 @@ async def main() -> None:
         await user.should_see("应用到工作副本")
         print("✓ format preview (itemized view) rendered")
 
-        user.find(marker="view-mode").click()
-        try:
-            await user.should_see("按条目分组")
-            print("✓ per-entry diff view switches in")
-        except AssertionError:
-            print("… view toggle not driven by simulation; skipping view switch")
+        user.find(marker="view-mode").trigger("update:model-value", 1)
+        await settle()
+        await user.should_see("按条目分组")
+        user.find(marker="view-mode").trigger("update:model-value", 2)
+        await settle()
+        await user.should_see("每条结果独立成卡")
+        user.find(marker="view-mode").trigger("update:model-value", 0)
+        print("✓ all three preview views switch correctly")
+
+        # Mode changes preserve the preview instead of rebuilding it empty.
+        user.find(marker="nav-table").click()
+        await settle()
+        user.find(marker="nav-tools").click()
+        await settle()
+        await user.should_see(marker="apply-btn")
+        print("✓ preview survives tool mode changes")
 
         user.find(marker="apply-btn").click()
         await settle()
@@ -86,6 +97,12 @@ async def main() -> None:
 
         user.find(marker="tab-clean").click()
         await settle()
+        user.find("自定义删除（逗号分隔）").type("abstract")
+        user.find(marker="nav-table").click()
+        await settle()
+        user.find(marker="nav-tools").click()
+        await settle()
+        assert next(iter(user.find("自定义删除（逗号分隔）").elements)).value == "abstract"
         user.find(marker="clean-preview").click()
         await settle()
         await user.should_see("逐项对照")
@@ -129,6 +146,13 @@ async def main() -> None:
         # Fresh page: paste a .bib text directly (no file involved).
         await user.open("/")
         await user.should_see("上传 BibTeX 文件")
+        user.find(marker="import-paste").click()
+        user.find(marker="paste-input").type("not a bibliography")
+        user.find(marker="paste-load").click()
+        await settle()
+        await user.should_see("未识别到 BibTeX 条目")
+        await user.should_see("上传 BibTeX 文件")
+        user.find(marker="paste-input").clear()
         user.find(marker="paste-input").type(
             "@article{pasted1, title = {Pasted Entry}, year = {2024}}"
         )
@@ -150,6 +174,20 @@ async def main() -> None:
         await user.should_see("修改前")
         print("✓ table formatter: example loads and formats (result-first view)")
 
+        # Formatting only refreshes output: textarea widget and focus survive.
+        input_widget = next(iter(user.find(marker="table-input").elements))
+        user.find(marker="table-format").click()
+        await settle()
+        assert next(iter(user.find(marker="table-input").elements)) is input_widget
+        user.find(marker="table-amp").trigger("update:model-value", 1)
+        await settle()
+        await user.should_see("输入或选项已变化")
+        assert not next(iter(user.find(marker="table-copy").elements)).enabled
+        user.find(marker="table-format").click()
+        await settle()
+        assert next(iter(user.find(marker="table-copy").elements)).enabled
+        print("✓ table input stays mounted and stale output cannot be exported")
+
         user.find(marker="table-input").clear()
         user.find(marker="table-input").type("\\begin{tabular}{cc} a & b \\\\ \\end{tabular}")
         user.find(marker="table-format").click()
@@ -165,6 +203,19 @@ async def main() -> None:
         await settle()
         await user.should_see("LaTeX 表格格式化")
         print("✓ header switch flips tools ⇄ table in place")
+
+        # Identical output should never add a redundant history entry.
+        await user.open("/")
+        user.find(marker="bib-example").click()
+        await settle()
+        user.find(marker="format-preview").click()
+        await settle()
+        user.find(marker="apply-btn").click()
+        await settle()
+        user.find(marker="format-preview").click()
+        await settle()
+        assert not next(iter(user.find(marker="apply-btn").elements)).enabled
+        print("✓ unchanged output disables Apply")
 
     print("\nAll GUI smoke checks passed.")
 
