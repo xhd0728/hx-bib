@@ -35,13 +35,20 @@ import inspect
 import json
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from nicegui import events, ui
 
 from ..core import cleaner
-from ..core.diff import diff_documents, diff_lines, entry_identity, match_by_key, split_entries
+from ..core.diff import (
+    diff_documents,
+    diff_lines,
+    entry_identity,
+    match_by_key,
+    split_entries,
+)
 from ..core.latex_table import (
     CommentLine,
     Row,
@@ -56,18 +63,34 @@ from ..core.normalize import NormalizeOptions, normalize_document
 from ..core.parser import parse_bibtex
 from ..core.validator import ValidateOptions, validate_document
 from ..core.venues import (
-    VENUES, families, get_venue, match_venue, render_venue, search_venues,
+    VENUES,
+    families,
+    get_venue,
+    match_venue,
+    render_venue,
+    search_venues,
 )
 from ..core.writer import FormatOptions, render_document, render_entry
 from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entries
 from ..verify.report import build_html as build_verify_html
-
 from .i18n import t
 from .styles import CSS
 from .workspace import (
-    DEFAULT_SETTINGS, invalidate_results, jump_stage as _jump_stage,
-    merge_settings as _merge_settings, new_state as _new_state,
-    preview_is_current, push_stage as _push_stage,
+    DEFAULT_SETTINGS,
+    invalidate_results,
+    preview_is_current,
+)
+from .workspace import (
+    jump_stage as _jump_stage,
+)
+from .workspace import (
+    merge_settings as _merge_settings,
+)
+from .workspace import (
+    new_state as _new_state,
+)
+from .workspace import (
+    push_stage as _push_stage,
 )
 
 SEVERITY_COLOR = {"error": "#dc2626", "warning": "#d97706", "info": "#2563eb"}
@@ -174,6 +197,7 @@ def _set_setting(state: dict, path: str, key: str, value) -> None:
     if isinstance(node, dict):
         node[key] = value
     state["settings_dirty"] = True
+    _update_preview_controls(state)
 
 
 def _bind(widget, state: dict, path: str, key: str, after=None):
@@ -190,6 +214,20 @@ def _bind(widget, state: dict, path: str, key: str, after=None):
 
 def _opt(state: dict, path: str, key: str):
     return _merge_settings(DEFAULT_SETTINGS, state["settings"]).get(path, {}).get(key)
+
+
+def _preview_config(state: dict, key: str) -> dict:
+    if key == "venues":
+        return {"venue_style": _opt(state, "normalize", "venue_style")}
+    config = deepcopy(state["settings"].get(key, {}))
+    if key == "clean":
+        config["drafts"] = {k: v for k, v in state["drafts"].items() if k.startswith("clean_")}
+    return config
+
+
+def _update_preview_controls(state: dict) -> None:
+    for update in state.get("preview_controls", {}).values():
+        update()
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +716,8 @@ def _download(state: dict, text: str, suffix: str = "bib") -> None:
 
 def _busy(button, busy: bool) -> None:
     """Show / hide the spinner inside a button while a job runs."""
+    if button.is_deleted:
+        return
     try:
         if busy:
             button.props("loading")
@@ -692,13 +732,15 @@ async def _run_preview_job(button, container, state: dict, lang: str,
                            opts: FormatOptions, label: str) -> None:
     """Compute from an immutable source; a newer document/job always wins."""
     before, revision = state["text"], state["revision"]
+    config = _preview_config(state, key)
     token = object()
     state["preview_jobs"][key] = token
     _busy(button, True)
     try:
         result = await asyncio.to_thread(compute, before)
     except Exception as exc:  # surface failures without losing the working copy
-        ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
+        if preview_is_current(state, revision, before):
+            ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
         return
     finally:
         _busy(button, False)
@@ -709,16 +751,24 @@ async def _run_preview_job(button, container, state: dict, lang: str,
     state["previews"][key] = {
         "before": before, "result_text": result, "opts": opts, "label": label,
         "revision": revision,
+        "key": key, "config": config,
     }
     if not container.is_deleted:
         _render_preview(container, state, lang, before, result, refresh_body,
-                        opts=opts, label=label, revision=revision)
+                        opts=opts, label=label, revision=revision, key=key, config=config)
+    elif state["mode"] == "tools" and state["tab"] == key:
+        refresh_body.refresh()
 
 
 def _draft(widget, state: dict, key: str, default=""):
     """Keep unfinished input in memory across mode/language/history refreshes."""
     widget.value = state["drafts"].get(key, default)
-    widget.on_value_change(lambda e: state["drafts"].update({key: e.value}))
+    def changed(e) -> None:
+        state["drafts"][key] = e.value
+        if key.startswith("clean_"):
+            _update_preview_controls(state)
+
+    widget.on_value_change(changed)
     return widget
 
 
@@ -956,16 +1006,21 @@ def _build_page(initial_mode: str) -> None:
                             for key, label, icon in tab_defs:
                                 ui.tab(key, label, icon=icon).mark(f"tab-{key}")
 
-                        tabs.on_value_change(lambda e: state.update(tab=e.value))
+                        @ui.refreshable
+                        def active_panel() -> None:
+                            key = state["tab"]
+                            with ui.element("section").classes("hx-panel-scroll w-full").props(
+                                f'data-hx-scroll="panel-{key}" role=tabpanel '
+                                f'aria-label="{t(lang, "tab_" + key)}"'
+                            ):
+                                _build_panel(key, state, lang, doc, body)
 
-                        with ui.tab_panels(tabs, value=state["tab"], animated=False).classes(
-                            "hx-workspace-panels w-full bg-transparent"
-                        ):
-                            for key, _, _ in tab_defs:
-                                with ui.tab_panel(key).classes("hx-panel-scroll p-0").props(
-                                    f'data-hx-scroll="panel-{key}"'
-                                ):
-                                    _build_panel(key, state, lang, doc, body)
+                        def select_tab(e) -> None:
+                            state["tab"] = e.value
+                            active_panel.refresh()
+
+                        tabs.on_value_change(select_tab)
+                        active_panel()
 
             body()
 
@@ -1223,7 +1278,7 @@ def _render_table_page(state: dict, lang: str, body) -> None:
             if res is None:
                 ui.html(
                     f'<div class="hx-empty">{_esc(t(lang, "table_empty_preview"))}</div>'
-                )
+                ).classes("w-full")
                 return
             before, result = res
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
@@ -1422,13 +1477,16 @@ def _build_panel(key: str, state: dict, lang: str, doc, refresh_body: Callable) 
     builders[key](state, lang, doc, refresh_body)
 
 
-def _preview_area(lang: str, state: dict, key: str, refresh_body) -> ui.column:
+def _preview_area(lang: str, state: dict, key: str, refresh_body,
+                  placeholder: bool = True) -> ui.column:
     col = ui.column().classes("hx-preview w-full gap-2").props(f'data-hx-scroll="preview-{key}"')
     saved = state["previews"].get(key)
     if saved and preview_is_current(state, saved["revision"], saved["before"]):
         _render_preview(col, state, lang, saved["before"], saved["result_text"],
                         refresh_body, opts=saved["opts"], label=saved["label"],
-                        revision=saved["revision"])
+                        revision=saved["revision"], key=key, config=saved["config"])
+        return col
+    if not placeholder:
         return col
     with col:
         with ui.card().classes("hx-card w-full p-5 gap-3"):
@@ -1469,7 +1527,7 @@ def _render_entry_cards(container: ui.column, result_text: str,
                     ui.button(
                         icon="content_copy",
                         on_click=_copy_handler(text, lang),
-                    ).props("flat dense size=sm").tooltip(
+                    ).props(f'flat dense size=sm aria-label="{t(lang, "copy_entry")}"').tooltip(
                         t(lang, "copy_entry")
                     ).mark(f"copy-{entry.key}")
                 ui.html(f"<pre class='hx-pre'>{_esc(text)}</pre>")
@@ -1478,14 +1536,17 @@ def _render_entry_cards(container: ui.column, result_text: str,
 def _render_preview(container: ui.column, state: dict, lang: str,
                     before: str, result_text: str, refresh_body=None,
                     opts: Optional[FormatOptions] = None,
-                    label: str = "", revision: Optional[int] = None) -> None:
+                    label: str = "", revision: Optional[int] = None,
+                    key: str = "format", config: Optional[dict] = None) -> None:
     revision = state["revision"] if revision is None else revision
+    config = _preview_config(state, key) if config is None else config
     container.clear()
     with container:
         with ui.card().classes("hx-card w-full p-5 gap-3"):
             ui.label(t(lang, "preview_title")).classes("hx-panel-title").mark(
                 "preview-title"
             )
+            status = ui.label("").classes("hx-tab-note").style("min-height:40px")
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
                 ui.html(_summary_line(before, result_text, lang))
                 with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -1540,6 +1601,9 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                     if not preview_is_current(state, revision, before):
                         ui.notify(t(lang, "stale_preview"), type="warning")
                         return
+                    if config != _preview_config(state, key):
+                        ui.notify(t(lang, "preview_options_changed"), type="warning")
+                        return
                     if not _push_stage(state, label or t(lang, "applied"), result_text):
                         return
                     ui.notify(
@@ -1558,10 +1622,24 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                 ).mark("copy-result-btn")
                 ui.button(t(lang, "download"), icon="download",
                           on_click=download_result).props("outline")
-                ui.button(t(lang, "apply_btn"), icon="check",
+                apply_button = ui.button(t(lang, "apply_btn"), icon="check",
                           on_click=apply_result).props(
                     "unelevated color=primary"
                 ).mark("apply-btn").set_enabled(result_text != before)
+
+            def update_status() -> None:
+                if apply_button.is_deleted:
+                    return
+                current = preview_is_current(state, revision, before)
+                same_options = config == _preview_config(state, key)
+                apply_button.set_enabled(current and same_options and result_text != before)
+                message = ("stale_preview" if not current else "preview_options_changed"
+                           if not same_options else "no_changes" if result_text == before
+                           else "preview_current")
+                status.set_text(t(lang, message))
+
+            state.setdefault("preview_controls", {})[key] = update_status
+            update_status()
 
 
 # -- format -----------------------------------------------------------------
@@ -1923,6 +2001,8 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                     state["check_report"] = report
                     if not result_area.is_deleted:
                         render_report(report)
+                    elif state["mode"] == "tools" and state["tab"] == "check":
+                        refresh_body.refresh()
             except Exception as exc:
                 ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
             finally:
@@ -2085,13 +2165,11 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
                 progress["paused"] = False
                 if state["run_control"] is control:
                     state["run_control"] = None
-                try:  # widgets may have been rebuilt (language switch) mid-run
+                if not run_button.is_deleted:
                     _busy(run_button, False)
                     pause_button.disable()
                     stop_button.disable()
                     pause_button.set_text(t(lang, "pause"))
-                except Exception:  # noqa: BLE001
-                    pass
 
             if not preview_is_current(state, revision, before):
                 return
@@ -2117,7 +2195,7 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
         def show_results_safe() -> None:
             if not results_area.is_deleted:
                 show_results()
-            else:
+            elif state["mode"] == "tools" and state["tab"] == "verify":
                 refresh_body.refresh()
 
         run_button.on_click(run_verify)
@@ -2209,11 +2287,10 @@ def _venue_card(venue, lang: str, used: int = 0) -> None:
             with ui.row().classes("hx-vrow w-full no-wrap"):
                 ui.label(t(lang, short_key)).classes("hx-vrow-label")
                 ui.label(rendered).classes("hx-vrow-val truncate")
-                ui.space()
                 ui.button(
                     icon="content_copy",
                     on_click=_copy_handler(rendered, lang),
-                ).props("flat dense size=sm round").tooltip(t(lang, copy_key)).mark(
+                ).props(f'flat dense size=sm round aria-label="{t(lang, copy_key)}"').tooltip(t(lang, copy_key)).mark(
                     f"venue-{venue.abbr}-{mk}"
                 )
 
@@ -2266,7 +2343,7 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
                     run_button = ui.button(
                         t(lang, "venues_norm_btn"), icon="preview",
                     ).props("unelevated color=primary").mark("venue-normalize-preview")
-            normalize_preview = _preview_area(lang, state, "venues", refresh_body)
+            normalize_preview = _preview_area(lang, state, "venues", refresh_body, placeholder=False)
 
             async def run_venue_normalize() -> None:
                 style = venue_style.value or "abbr"

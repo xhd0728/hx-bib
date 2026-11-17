@@ -6,6 +6,8 @@ from typing import Dict
 
 I18N: Dict[str, Dict[str, str]] = {
     "zh": {
+        "preview_current": "预览已更新，确认后可应用到工作副本。",
+        "preview_options_changed": "选项已变化，请重新生成预览后再应用。",
         "upload_rejected": "请选择不超过 20 MB 的 .bib 或 .bibtex 文件。",
         "no_field_changes": "条目字段内容未变化。排版、顺序或注释有改动时，请切换至「左右 Diff」并查看全部。",
         "nonfield_changes": "排版、顺序或文件级内容有变化",
@@ -273,6 +275,8 @@ I18N: Dict[str, Dict[str, str]] = {
         "table_content_note": "单元格或规则内容有变化（例如删除了表格内的 % 注释），请对照确认。",
     },
     "en": {
+        "preview_current": "Preview is up to date. Review it before applying.",
+        "preview_options_changed": "Options changed. Generate a new preview before applying.",
         "upload_rejected": "Choose a .bib or .bibtex file no larger than 20 MB.",
         "no_field_changes": "Entry field values are unchanged. Use Diff with Show all to inspect layout, order or comment changes.",
         "nonfield_changes": "Layout, order or document-level changes",

@@ -3,10 +3,17 @@
 import asyncio
 import threading
 
+import pytest
+
 from hx_bib.gui import app
 from hx_bib.gui.workspace import (
-    DEFAULT_SETTINGS, invalidate_results, jump_stage, merge_settings,
-    new_state, preview_is_current, push_stage,
+    DEFAULT_SETTINGS,
+    invalidate_results,
+    jump_stage,
+    merge_settings,
+    new_state,
+    preview_is_current,
+    push_stage,
 )
 from hx_bib.verify import RunControl
 
@@ -118,3 +125,49 @@ def test_preview_job_discards_result_after_document_change(monkeypatch):
 
     asyncio.run(scenario())
     assert not rendered and not state["previews"]
+
+
+def test_newer_preview_job_wins_even_if_old_job_finishes_last(monkeypatch):
+    state = loaded_state()
+    started, release = threading.Event(), threading.Event()
+    rendered = []
+
+    class Widget:
+        is_deleted = False
+
+        def props(self, *args, **kwargs):
+            pass
+
+    def old_job(before):
+        started.set()
+        assert release.wait(5)
+        return "old result"
+
+    monkeypatch.setattr(app, "_render_preview", lambda *a, **k: rendered.append(a[4]))
+
+    async def scenario():
+        old = asyncio.create_task(app._run_preview_job(
+            Widget(), Widget(), state, "en", "format", old_job, None, None, "format",
+        ))
+        assert await asyncio.to_thread(started.wait, 5)
+        await app._run_preview_job(Widget(), Widget(), state, "en", "format",
+                                   lambda before: "new result", None, None, "format")
+        release.set()
+        await old
+
+    asyncio.run(scenario())
+    assert rendered == ["new result"]
+    assert state["previews"]["format"]["result_text"] == "new result"
+
+
+@pytest.mark.parametrize("copied", [True, False])
+def test_copy_notification_reflects_browser_result(monkeypatch, copied):
+    notifications = []
+
+    async def javascript(code):
+        return copied
+
+    monkeypatch.setattr(app.ui, "run_javascript", javascript)
+    monkeypatch.setattr(app.ui, "notify", lambda *args, **kwargs: notifications.append(kwargs))
+    asyncio.run(app._copy_text('A "quoted" title', "en"))
+    assert notifications[0]["type"] == ("positive" if copied else "warning")

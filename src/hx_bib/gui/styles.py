@@ -284,8 +284,7 @@ html, body { height:100%; overflow:hidden; }
 .hx-workspace > .hx-status, .hx-workspace > .hx-tabs { flex:none; }
 .hx-tabs { position:relative; top:auto; border-radius:12px; box-shadow:none; }
 .hx-tabs .q-tab { min-height:42px; }
-.hx-workspace-panels { flex:1; min-height:0; }
-.hx-workspace-panels > .q-panel { height:100%; }
+.hx-workspace > .nicegui-refreshable { flex:1; min-height:0; width:100%; overflow:hidden; }
 .hx-panel-scroll { height:100%; overflow:auto; scrollbar-gutter:stable; padding-right:4px; }
 .hx-card { border-radius:14px; box-shadow:0 1px 3px rgba(15,23,42,.035); }
 .hx-operation-grid { display:grid; grid-template-columns:minmax(300px,360px) minmax(0,1fr);

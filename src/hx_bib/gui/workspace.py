@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import math
-
+from copy import deepcopy
 
 DEFAULT_SETTINGS = {
     "lang": "zh",
@@ -85,7 +84,7 @@ def invalidate_results(state: dict) -> None:
     if state["run_control"] is not None:
         state["run_control"].cancel()
     state.update(
-        revision=state["revision"] + 1, previews={}, preview_jobs={},
+        revision=state["revision"] + 1, previews={}, preview_jobs={}, preview_controls={},
         check_report=None, verify_results=None, check_filter="ALL",
         verify_filter="ALL", run_control=None, progress=idle_progress(),
     )

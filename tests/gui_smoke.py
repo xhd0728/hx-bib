@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 from pathlib import Path
 
 os.environ["NICEGUI_USER_SIMULATION"] = "true"
@@ -82,6 +83,15 @@ async def main() -> None:
         await settle()
         await user.should_see(marker="apply-btn")
         print("✓ preview survives tool mode changes")
+
+        user.find("等号对齐").click()
+        await settle()
+        await user.should_see("选项已变化")
+        assert not next(iter(user.find(marker="apply-btn").elements)).enabled
+        user.find(marker="format-preview").click()
+        await settle()
+        assert next(iter(user.find(marker="apply-btn").elements)).enabled
+        print("✓ changed options invalidate Apply until the preview is regenerated")
 
         user.find(marker="apply-btn").click()
         await settle()
@@ -218,6 +228,55 @@ async def main() -> None:
         await settle()
         assert not next(iter(user.find(marker="apply-btn").elements)).enabled
         print("✓ unchanged output disables Apply")
+
+        # Exercise the real GUI callbacks with a gated, offline verifier.
+        from hx_bib.gui import app as gui_app
+        from hx_bib.verify.checker import CheckResult
+
+        saved = gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries
+        state = gui_app._new_state()
+        started, release = threading.Event(), threading.Event()
+
+        def gated_verify(net, entries, **kwargs):
+            started.set()
+            assert release.wait(5)
+            return [CheckResult(entry=entries[0], verdict="FAIL")]
+
+        gui_app._new_state = lambda: state
+        gui_app.prefetch_arxiv = lambda *args: None
+        gui_app.verify_entries = gated_verify
+        try:
+            await user.open("/")
+            user.find(marker="bib-example").click()
+            await settle()
+            user.find(marker="tab-verify").click()
+            await settle()
+            user.find(marker="verify-start").click()
+            assert await asyncio.to_thread(started.wait, 5)
+            user.find(marker="verify-pause").click()
+            await settle()
+            assert state["progress"]["paused"]
+            user.find(marker="nav-table").click()
+            await settle()
+            user.find(marker="nav-tools").click()
+            await settle()
+            assert next(iter(user.find(marker="verify-pause").elements)).enabled
+            await user.should_see("继续")
+            old_control = state["run_control"]
+            user.find(marker="tab-format").click()
+            await settle()
+            user.find(marker="format-preview").click()
+            await settle()
+            user.find(marker="apply-btn").click()
+            await settle()
+            assert old_control.cancelled.is_set()
+            release.set()
+            await settle(0.5)
+            assert state["verify_results"] is None and not state["progress"]["running"]
+            print("✓ verification controls survive mode switches; document edits cancel stale runs")
+        finally:
+            release.set()
+            gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries = saved
 
     print("\nAll GUI smoke checks passed.")
 
