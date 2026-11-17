@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from dataclasses import dataclass, field
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple, TypeVar
 
 from .model import Document, Entry

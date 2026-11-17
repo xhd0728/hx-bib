@@ -57,7 +57,6 @@ def parse_bibtex(text: str) -> Document:
     """Parse ``text`` into a :class:`Document` (never raises on bad input)."""
     doc = Document()
     cur = _Cursor(text)
-    pending_free_text_start = 0  # start of the run of plain text since last block
 
     while not cur.eof():
         at = text.find("@", cur.pos)
@@ -118,7 +117,6 @@ def _read_balanced(
     depth = 1
     i = start
     n = len(text)
-    quote_depth = 0
     while i < n:
         ch = text[i]
         if ch == "{":
@@ -148,7 +146,6 @@ def _parse_entry(
     error = None
     if not ok:
         error = f"line {line}: unterminated entry @{etype}{open_char}…"
-        body = body  # best effort
 
     # Cite key: everything before the first top-level comma.
     comma = _find_top_level(body, ",")
