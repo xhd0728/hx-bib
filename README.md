@@ -104,7 +104,7 @@ The GUI goes one step further: three preview views (**itemized**, **side-by-side
 
 ## GUI workflow
 
-All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the sticky status bar — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. Validation results are grouped by severity (**all / error / warning / suggestion**, with counts) and every issue expands to show its entry, line, field and a fix hint. The upload screen and every operation panel carry a short numbered flow (load → preview → apply), and the **BibTeX tools ⇄ LaTeX tables** switch in the header flips between the toolbox and the table formatter **in place** — instant, with no reload and no state loss. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both modes score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
+All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the history — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. The workspace tab bar sticks right below the header while you scroll and keeps your place when switching between panels of different heights. Validation results are grouped by severity (**all / error / warning / suggestion**, with counts) and every issue expands to show its entry, line, field and a fix hint. The upload screen and every operation panel carry a short numbered flow (load → preview → apply), and the **BibTeX tools ⇄ LaTeX tables** switch in the header flips between the toolbox and the table formatter **in place** — instant, with no reload and no state loss. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both modes score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
 
 ## Venue families
 
@@ -116,6 +116,8 @@ Presets cover the common CS/AI conferences and journals. Grouping rules:
 
 `normalize --venue-style abbr` renders e.g. `Proceedings of EMNLP` (with `Findings of …` preserved);
 `--venue-style family` collapses the split above to `ARR` / `ACM`.
+
+The GUI's **Venues** tab is not just a reference list: pick one style there (abbreviated / full name / family) and preview the whole working copy re-normalized, then apply it as a staged step — the same choice drives the **Normalize** panel, and the two panels link to each other. Each preset card also shows how many entries in the loaded file use that venue.
 
 ## Verification verdicts
 

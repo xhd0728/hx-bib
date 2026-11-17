@@ -55,7 +55,9 @@ from ..core.model import Entry
 from ..core.normalize import NormalizeOptions, normalize_document
 from ..core.parser import parse_bibtex
 from ..core.validator import ValidateOptions, validate_document
-from ..core.venues import VENUES, families, render_venue, search_venues
+from ..core.venues import (
+    VENUES, families, get_venue, match_venue, render_venue, search_venues,
+)
 from ..core.writer import FormatOptions, render_document, render_entry
 from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entries
 from ..verify.report import build_html as build_verify_html
@@ -95,8 +97,31 @@ CSS = """
         --hx-surface:#fff; --hx-bg:#f6f7fb; }
 body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
        background: var(--hx-bg); color: var(--hx-body); }
-.q-btn { border-radius: 10px; font-weight: 600; }
-.q-field--outlined .q-field__control { border-radius: 10px; }
+.q-btn { border-radius: 10px; font-weight: 600; text-transform: none; }
+.q-btn--unelevated.bg-primary { box-shadow: 0 2px 10px -4px rgba(67,56,202,.55); }
+.q-btn--unelevated.bg-primary:hover { box-shadow: 0 3px 14px -4px rgba(67,56,202,.65); }
+.q-field--outlined .q-field__control { border-radius: 10px; background:#fff; }
+.q-field--outlined .q-field__control:before { border-color:#d8dce8; }
+.q-field--outlined:hover .q-field__control:before { border-color:#b9c0d4; }
+.q-field--outlined.q-field--focused .q-field__control:after { border-width:2px; }
+/* segmented button groups (ui.toggle) — same visual language as the header switch */
+.q-btn-toggle { background:#eef0f6; border-radius:12px; padding:3px; }
+.q-btn-toggle .q-btn { border-radius:9px !important; font-weight:600; font-size:12.5px;
+                       color:#4b5563; min-height:28px; padding:2px 12px;
+                       transition:background .15s,color .15s,box-shadow .15s; }
+.q-btn-toggle .q-btn:hover { background:rgba(255,255,255,.55); color:var(--hx-ink); }
+.q-btn-toggle .q-btn.bg-white { background:#fff !important; color:var(--hx-brand-ink) !important;
+                                box-shadow:0 1px 3px rgba(15,23,42,.14); }
+/* subtle scrollbars */
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:8px;
+                            border:2px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover { background:#94a3b8; background-clip:padding-box;
+                                  border:2px solid transparent; }
+/* switches in brand indigo */
+.q-toggle__inner { color:#b6bfd0; }
+.q-toggle__inner--truthy { color:var(--hx-brand); }
 .hx-title, .hx-brand, .hx-hero-title, .hx-panel-title { font-weight: 800;
        letter-spacing: -0.02em; color: var(--hx-ink); }
 .hx-card { border-radius: 16px; background: var(--hx-surface); border: 1px solid var(--hx-line);
@@ -104,7 +129,7 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
            font-weight:700; white-space:nowrap; }
 .hx-tab-note { color:#4b5563; font-size:13px; }
-.hx-empty { border:1.5px dashed #cbd5e1; border-radius:12px; padding:22px 16px;
+.hx-empty { border:1.5px dashed #cbd5e1; border-radius:12px; padding:22px 16px; width:100%;
             text-align:center; color:#64748b; font-size:13.5px; background:#fafbfc; }
 /* ---- app header ---- */
 .hx-header { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,.86);
@@ -161,14 +186,20 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 /* auto-upload: hide the empty file list so the dropzone stays compact
    (still shows entries when a file errors out) */
 .hx-uploader .q-uploader__list:not(:has(.q-uploader__file)) { display:none; }
-/* ---- workspace tabs as pills ---- */
-.hx-tabs { background:#fff; border:1px solid var(--hx-line); border-radius:14px; padding:4px;
-           box-shadow:0 1px 2px rgba(15,23,42,.03); }
-.hx-tabs .q-tab { min-height:36px; border-radius:10px; padding:0 14px; color:#4b5563;
-                  font-weight:600; font-size:13.5px; }
-.hx-tabs .q-tab--active { background:var(--hx-brand-soft); color:var(--hx-brand-ink); }
+/* ---- workspace tabs as a sticky segmented bar (pinned below the header) ---- */
+.hx-tabs { position:sticky; top:60px; z-index:40; background:#f1f3f9;
+           border:1px solid var(--hx-line); border-radius:14px; padding:4px;
+           box-shadow:0 5px 18px -14px rgba(15,23,42,.4); }
+.hx-tabs .q-tab { min-height:38px; border-radius:10px; padding:0 14px; color:#4b5563;
+                  font-weight:600; font-size:13.5px;
+                  transition:background .15s, color .15s, box-shadow .15s; }
+.hx-tabs .q-tab:hover { background:rgba(255,255,255,.6); color:var(--hx-ink); }
+.hx-tabs .q-tab--active { background:#fff; color:var(--hx-brand-ink);
+                          box-shadow:0 1px 3px rgba(15,23,42,.14); }
+.hx-tabs .q-tab--active:hover { background:#fff; }
 .hx-tabs .q-tab__indicator { display:none; }
 .hx-tabs .q-tabs__content { gap:2px; }
+.hx-tabs .q-tabs__arrow { color:#64748b; }
 /* ---- panel headers / option bars ---- */
 .hx-panel-icon { width:36px; height:36px; border-radius:10px; background:var(--hx-brand-soft);
                  display:flex; align-items:center; justify-content:center;
@@ -182,9 +213,23 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-kbd { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:11.5px;
           color:#475569; background:#f1f5f9; border:1px solid var(--hx-line);
           border-bottom-width:2px; border-radius:6px; padding:1px 7px; }
-/* ---- sticky status bar + stage history ---- */
-.hx-status { position:sticky; top:68px; z-index:30; background:rgba(255,255,255,.94);
-             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+/* ---- venue presets: normalization action + cards ---- */
+.hx-vaction { background:linear-gradient(135deg,#eef2ff,#f5f3ff); border:1px solid #e0e7ff;
+              border-radius:14px; padding:14px 16px; }
+.hx-vaction .material-icons { color:#4338ca; }
+.hx-venue-card { transition:border-color .15s, box-shadow .15s, transform .15s; }
+.hx-venue-card:hover { border-color:#c7d2fe;
+                       box-shadow:0 6px 22px -12px rgba(67,56,202,.38); }
+.hx-vrow { display:flex; align-items:center; gap:8px; padding:3px 4px 3px 8px;
+           border-radius:8px; background:#f8fafc; border:1px solid #eef2f7; }
+.hx-vrow-label { flex:none; width:34px; font-size:10.5px; font-weight:800; color:#7c8698;
+                 letter-spacing:.04em; }
+.hx-vrow-val { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+               font-size:11.5px; color:#334155; }
+.hx-style-ex { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+               font-size:12px; color:#64748b; }
+/* ---- status bar + stage history ---- */
+.hx-status { background:rgba(255,255,255,.94); }
 .hx-stage { border-radius:999px !important; color:#5b6577 !important; font-weight:600;
             font-size:12.5px !important; min-height:28px; padding:0 10px; }
 .hx-stage:hover { background:#f1f5f9; }
@@ -1223,11 +1268,34 @@ def _build_page(initial_mode: str) -> None:
                         ]
                         with ui.tabs(value=state["tab"]).classes(
                             "hx-tabs w-full"
-                        ).props("align=left inline-label no-caps") as tabs:
+                        ).props(
+                            "align=left inline-label no-caps id=hx-tabs-bar"
+                        ) as tabs:
                             for key, label, icon in tab_defs:
                                 ui.tab(key, label, icon=icon).mark(f"tab-{key}")
 
-                        tabs.on_value_change(lambda e: state.update(tab=e.value))
+                        def tab_changed(value: str) -> None:
+                            state["tab"] = value
+                            # Keep the panel top pinned right below the sticky
+                            # tab bar when the user is scrolled into the
+                            # content — swinging between panels of very
+                            # different heights must not move what they see.
+                            if not _IN_SIM:
+                                try:
+                                    ui.run_javascript(
+                                        "(() => {"
+                                        " const bar = document.getElementById('hx-tabs-bar');"
+                                        " const panels = document.querySelector('.q-tab-panels');"
+                                        " if (!bar || !panels) return;"
+                                        " const b = bar.getBoundingClientRect().bottom;"
+                                        " const t = panels.getBoundingClientRect().top;"
+                                        " if (t < b) window.scrollBy(0, t - b - 8);"
+                                        "})()"
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+
+                        tabs.on_value_change(lambda e: tab_changed(e.value))
 
                         with ui.tab_panels(tabs, value=state["tab"]).classes(
                             "w-full bg-transparent"
@@ -1414,7 +1482,10 @@ def _render_table_page(state: dict, lang: str, body) -> None:
                         "none": t(lang, "table_amp_none"),
                     },
                     value=state["amp"],
-                ).props("dense unelevated no-caps inline").mark("table-amp")
+                ).props(
+                    "dense unelevated no-caps inline toggle-color=white "
+                    "toggle-text-color=primary"
+                ).mark("table-amp")
                 amp.on_value_change(lambda e: state.update(amp=e.value or "space"))
             blank = ui.switch(
                 t(lang, "table_blank"), value=state["blank_lines"],
@@ -1707,12 +1778,18 @@ def _render_preview(container: ui.column, state: dict, lang: str,
                          "diff": t(lang, "view_diff"),
                          "entries": t(lang, "view_entries")},
                         value="list",
-                    ).props("dense unelevated no-caps").mark("view-mode")
+                    ).props(
+                        "dense unelevated no-caps toggle-color=white "
+                        "toggle-text-color=primary"
+                    ).mark("view-mode")
                     mode_toggle = ui.toggle(
                         {"changed": t(lang, "changes_only"),
                          "all": t(lang, "show_all")},
                         value="changed",
-                    ).props("dense outlined no-caps").mark("diff-mode")
+                    ).props(
+                        "dense unelevated no-caps toggle-color=white "
+                        "toggle-text-color=primary"
+                    ).mark("diff-mode")
 
             content_container = ui.column().classes("w-full")
 
@@ -1937,25 +2014,57 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("auto_fix_high", t(lang, "tab_normalize"), t(lang, "normalize_note"))
         ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
-        with ui.row().classes("gap-6 items-start flex-wrap"):
+
+        with ui.element("div").classes("hx-optbar w-full items-start"):
             with ui.column().classes("gap-1"):
-                ui.label(t(lang, "venue_style")).classes("text-sm font-semibold")
-                venue_style = _bind(ui.radio(
-                    {"abbr": t(lang, "style_abbr"),
-                     "full": t(lang, "style_full"),
-                     "family": t(lang, "style_family"),
-                     "keep": t(lang, "style_keep")},
+                ui.label(t(lang, "venue_style")).classes("hx-optlabel")
+                venue_style = _bind(ui.toggle(
+                    {"abbr": t(lang, "style_abbr_short"),
+                     "full": t(lang, "style_full_short"),
+                     "family": t(lang, "style_family_short"),
+                     "keep": t(lang, "style_keep_short")},
                     value=_opt(state, "normalize", "venue_style") or "abbr",
-                ), state, "normalize", "venue_style")
+                ).props(
+                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                ).mark("normalize-venue-style"),
+                    state, "normalize", "venue_style")
+                example = ui.label("").classes("hx-style-ex")
+
+                def update_example() -> None:
+                    style = venue_style.value or "abbr"
+                    if style == "keep":
+                        example.set_text(t(lang, "style_example_keep"))
+                    else:
+                        venue = get_venue("EMNLP")
+                        example.set_text(t(lang, "style_example").format(
+                            render_venue(venue, style=style)
+                            if venue else "…"
+                        ))
+
+                update_example()
+                venue_style.on_value_change(lambda _: update_example())
+
+                def goto_venues() -> None:
+                    state["tab"] = "venues"
+                    refresh_body.refresh()
+
+                ui.button(t(lang, "goto_venues"), icon="stadium",
+                          on_click=goto_venues).props(
+                    "flat dense no-caps"
+                ).classes("hx-lang self-start").style("margin-left:-8px")
             with ui.column().classes("gap-1"):
-                ui.label(t(lang, "arxiv_style")).classes("text-sm font-semibold")
-                arxiv_style = _bind(ui.radio(
-                    {"journal": t(lang, "arxiv_journal"),
-                     "misc": t(lang, "arxiv_misc"),
-                     "keep": t(lang, "style_keep")},
+                ui.label(t(lang, "arxiv_style")).classes("hx-optlabel")
+                arxiv_style = _bind(ui.toggle(
+                    {"journal": t(lang, "arxiv_journal_short"),
+                     "misc": t(lang, "arxiv_misc_short"),
+                     "keep": t(lang, "style_keep_short")},
                     value=_opt(state, "normalize", "arxiv_style") or "journal",
-                ), state, "normalize", "arxiv_style")
-            with ui.column().classes("gap-2 mt-6"):
+                ).props(
+                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                ).mark("normalize-arxiv-style"),
+                    state, "normalize", "arxiv_style")
+            with ui.column().classes("gap-2"):
+                ui.label(t(lang, "normalize_fixes")).classes("hx-optlabel")
                 fix_types = _bind(ui.switch(t(lang, "fix_types"),
                                             value=bool(_opt(state, "normalize", "fix_types"))),
                                   state, "normalize", "fix_types")
@@ -2298,12 +2407,30 @@ def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
 
 
 # -- venues -----------------------------------------------------------------
-def _venue_card(venue, lang: str) -> None:
-    with ui.card().classes("hx-card p-3 gap-1"):
-        with ui.row().classes("w-full items-center gap-2"):
+def _venue_usage(doc) -> dict:
+    """Count how many entries in the loaded file use each venue preset."""
+    counts: dict = {}
+    if doc is None:
+        return counts
+    for entry in doc.entries:
+        for field in ("booktitle", "journal"):
+            hit = match_venue(entry.get(field) or "")
+            if hit:
+                counts[hit[0].abbr] = counts.get(hit[0].abbr, 0) + 1
+                break
+    return counts
+
+
+def _venue_card(venue, lang: str, used: int = 0) -> None:
+    with ui.card().classes("hx-card hx-venue-card p-3 gap-2"):
+        with ui.row().classes("w-full items-center gap-2 no-wrap"):
             ui.label(venue.abbr).style(
                 "font-family:ui-monospace,monospace;font-weight:800;font-size:15px"
             )
+            if used:
+                ui.label(t(lang, "venue_in_doc").format(n=used)).classes(
+                    "hx-chip"
+                ).style("background:#ecfdf5;color:#047857")
             ui.space()
             ui.label(venue.family).classes("hx-chip").style(
                 "background:#eef2ff;color:#4338ca"
@@ -2311,22 +2438,21 @@ def _venue_card(venue, lang: str) -> None:
             ui.label(venue.kind).classes("hx-chip").style(
                 "background:#f1f5f9;color:#475569"
             )
-        ui.label(venue.name).classes("text-xs").style("color:#475569")
-        for style, copy_key, mk in (
-            ("abbr", "venue_copy_abbr", "abbr"),
-            ("full", "venue_copy_full", "full"),
-            ("family", "venue_copy_family", "family"),
+        ui.label(venue.name).classes("text-xs").style("color:#475569;line-height:1.45")
+        for style, short_key, copy_key, mk in (
+            ("abbr", "style_abbr_short", "venue_copy_abbr", "abbr"),
+            ("full", "style_full_short", "venue_copy_full", "full"),
+            ("family", "style_family_short", "venue_copy_family", "family"),
         ):
             rendered = render_venue(venue, style=style)
-            with ui.row().classes("w-full items-center gap-1 no-wrap"):
-                ui.label(rendered).style(
-                    "font-family:ui-monospace,monospace;font-size:11.5px;color:#334155"
-                ).classes("truncate")
+            with ui.row().classes("hx-vrow w-full no-wrap"):
+                ui.label(t(lang, short_key)).classes("hx-vrow-label")
+                ui.label(rendered).classes("hx-vrow-val truncate")
                 ui.space()
                 ui.button(
                     icon="content_copy",
                     on_click=_copy_handler(rendered, lang),
-                ).props("flat dense size=sm").tooltip(t(lang, copy_key)).mark(
+                ).props("flat dense size=sm round").tooltip(t(lang, copy_key)).mark(
                     f"venue-{venue.abbr}-{mk}"
                 )
 
@@ -2334,7 +2460,77 @@ def _venue_card(venue, lang: str) -> None:
 def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("event", t(lang, "tab_venues"), t(lang, "venues_note"))
-        with ui.row().classes("gap-3 items-end"):
+
+        usage = _venue_usage(doc)
+        offline = state.get("venues_only") or doc is None
+        if offline:
+            with ui.element("div").classes("hx-vaction w-full"):
+                with ui.row().classes("items-center gap-2 no-wrap"):
+                    ui.icon("auto_fix_high").style("font-size:18px")
+                    ui.label(t(lang, "venues_norm_offline")).classes(
+                        "text-sm"
+                    ).style("color:#3730a3")
+        else:
+            with ui.element("div").classes("hx-vaction w-full"):
+                with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                    ui.icon("auto_fix_high").style("font-size:18px")
+                    ui.label(t(lang, "venues_norm_title")).style(
+                        "font-weight:700;color:#312e81;font-size:14px"
+                    )
+                    ui.space()
+
+                    def goto_normalize() -> None:
+                        state["tab"] = "normalize"
+                        refresh_body.refresh()
+
+                    ui.button(t(lang, "goto_normalize"), icon="tune",
+                              on_click=goto_normalize).props(
+                        "flat dense no-caps"
+                    ).classes("hx-lang")
+                ui.label(t(lang, "venues_norm_note")).classes("text-xs").style(
+                    "color:#4c4f8a"
+                )
+                with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+                    ui.label(t(lang, "venue_style")).classes("hx-optlabel")
+                    venue_style = _bind(ui.toggle(
+                        {"abbr": t(lang, "style_abbr_short"),
+                         "full": t(lang, "style_full_short"),
+                         "family": t(lang, "style_family_short")},
+                        value=_opt(state, "normalize", "venue_style") or "abbr",
+                    ).props(
+                        "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                    ).mark("venue-norm-style"),
+                        state, "normalize", "venue_style")
+                    ui.space()
+                    run_button = ui.button(
+                        t(lang, "venues_norm_btn"), icon="preview",
+                    ).props("unelevated color=primary").mark("venue-normalize-preview")
+            normalize_preview = ui.column().classes("w-full gap-2")
+
+            def compute_normalized() -> str:
+                work = parse_bibtex(state["text"])
+                normalize_document(work, NormalizeOptions(
+                    venue_style=venue_style.value or "abbr",
+                    arxiv_style="keep",
+                    fix_entry_types=True,
+                    drop_arxiv_volume=False,
+                    add_arxiv_url=False,
+                ))
+                return render_document(work, FormatOptions())
+
+            async def run_venue_normalize() -> None:
+                _busy(run_button, True)
+                try:
+                    result = await asyncio.to_thread(compute_normalized)
+                finally:
+                    _busy(run_button, False)
+                _render_preview(normalize_preview, state, lang, state["text"], result,
+                                refresh_body, opts=FormatOptions(),
+                                label=t(lang, "venues_norm_label"))
+
+            run_button.on_click(run_venue_normalize)
+
+        with ui.row().classes("gap-3 items-end flex-wrap"):
             query = ui.input(t(lang, "search_venues")).classes("w-64").mark("venue-search")
             family = ui.select(["ALL", *families()], value="ALL",
                                label=t(lang, "family")).classes("w-40")
@@ -2357,7 +2553,7 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
                     "gap:12px"
                 ):
                     for venue in venues:
-                        _venue_card(venue, lang)
+                        _venue_card(venue, lang, usage.get(venue.abbr, 0))
 
         query.on_value_change(lambda _: render())
         family.on_value_change(lambda _: render())

@@ -114,7 +114,11 @@ async def main() -> None:
         user.find(marker="tab-venues").click()
         await settle()
         await user.should_see("个预设")
-        print("✓ venues tab renders preset cards")
+        await user.should_see("用预设规范化引用")   # venues tab normalizes, not just browses
+        user.find(marker="venue-normalize-preview").click()
+        await settle()
+        await user.should_see("修改预览")
+        print("✓ venues tab renders preset cards and venue normalization preview")
 
         user.find("中 / EN").click()
         await user.should_see("Format")
