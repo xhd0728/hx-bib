@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Sequence
 from .identifiers import extract_arxiv_id, is_arxiv_like
 from .model import Document, Entry
 from .normalize import unmatched_venues
-from .venues import match_venue
+from .venues import JOURNAL, match_venue
 
 ERROR = "error"
 WARNING = "warning"
@@ -180,10 +180,13 @@ def _check_venues(entry: Entry, opts: ValidateOptions, report: ValidationReport)
         if not value:
             continue
         stripped = value.strip().strip("{}").strip()
-        if stripped.lower() in _PLACEHOLDER_VENUES:
+        known = match_venue(stripped, expected_kind=JOURNAL if name == "journal" else None)
+        # TBD is both a placeholder and IEEE Transactions on Big Data. The
+        # journal field provides enough context to recognize the publication.
+        if stripped.lower() in _PLACEHOLDER_VENUES and not (name == "journal" and known):
             _add(report, WARNING, entry,
                  f"{name} is a placeholder ('{stripped}') — fill in the real venue", name)
-        elif match_venue(stripped) is None:
+        elif known is None and match_venue(stripped) is None:
             _add(report, INFO, entry,
                  f"{name} '{stripped}' is not in the venue presets", name)
 

@@ -59,6 +59,20 @@ def test_placeholder_venue_warns():
     assert any(i.severity == WARNING and "placeholder" in i.message for i in issues)
 
 
+def test_tbd_journal_abbreviation_is_not_a_placeholder_or_unknown_venue():
+    for name in ("TBD", "tbd", "IEEE Transactions on Big Data", "IEEE Trans. Big Data"):
+        report = validate_text(
+            "@article{x, author={A}, title={T}, journal={" + name + "}, year={2020}}"
+        )
+        assert not report.issues, name
+
+
+def test_unambiguous_journal_placeholders_still_warn():
+    for name in ("TODO", "unknown", "to be determined"):
+        issues = _issues("@article{x, author={A}, title={T}, journal={" + name + "}, year={2020}}")
+        assert any(i.severity == WARNING and "placeholder" in i.message for i in issues), name
+
+
 def test_unbalanced_braces_error():
     # The parser tolerates this; the validator must flag it.
     doc = parse_bibtex("@article{x, author = {A}, title = {T}, journal = {J}, year = {2020}")

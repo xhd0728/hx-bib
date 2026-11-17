@@ -104,6 +104,9 @@ VENUES: List[Venue] = [
           kind=JOURNAL, aliases=("Knowledge and Data Engineering",)),
     Venue("TNNLS", "IEEE Transactions on Neural Networks and Learning Systems", FAMILY_IEEE,
           kind=JOURNAL),
+    Venue("TBD", "IEEE Transactions on Big Data", FAMILY_IEEE, kind=JOURNAL,
+          aliases=("IEEE Trans. Big Data", "IEEE Transactions of Big Data",
+                   "IEEE Transaction of Big Data", "IEEE Transaction on Big Data")),
     # ---- Others -------------------------------------------------------------
     Venue("ECCV", "European Conference on Computer Vision", FAMILY_SPRINGER),
 ]

@@ -74,3 +74,14 @@ def test_search_and_families():
     assert V.search_venues("arr")        # matches family names too
     fams = V.families()
     assert V.FAMILY_ARR in fams and V.FAMILY_ACM in fams and V.FAMILY_IEEE in fams
+
+
+def test_ieee_transactions_on_big_data_preset():
+    for name in ("TBD", "IEEE Transactions on Big Data", "IEEE Trans. Big Data",
+                 "IEEE Transaction of Big Data"):
+        hit = V.match_venue(name, expected_kind=V.JOURNAL)
+        assert hit is not None and hit[0].abbr == "TBD"
+    venue = V.get_venue("TBD")
+    assert venue.kind == V.JOURNAL and venue.family == V.FAMILY_IEEE
+    assert V.render_venue(venue, style="full") == "IEEE Transactions on Big Data"
+    assert V.search_venues("big data") == [venue]

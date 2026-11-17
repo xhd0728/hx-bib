@@ -10,6 +10,20 @@ def _normalize(text, **kw):
     return doc, notes
 
 
+def test_tbd_journal_renders_in_full_and_abbreviated_styles():
+    doc, _ = _normalize("@article{x, journal={TBD}}", venue_style="full")
+    assert doc.entries[0].get("journal") == "IEEE Transactions on Big Data"
+    doc, _ = _normalize("@article{x, journal={IEEE Transactions on Big Data}}", venue_style="abbr")
+    assert doc.entries[0].get("journal") == "TBD"
+
+
+def test_ambiguous_tbd_conference_placeholder_is_not_rewritten_as_a_journal():
+    doc, _ = _normalize("@inproceedings{x, booktitle={TBD}}", venue_style="full")
+    assert doc.entries[0].type == "inproceedings"
+    assert doc.entries[0].get("booktitle") == "TBD"
+    assert not doc.entries[0].has("journal")
+
+
 def test_arxiv_journal_style():
     doc, notes = _normalize(
         "@inproceedings{p, title = {T}, booktitle = {ICML}, "

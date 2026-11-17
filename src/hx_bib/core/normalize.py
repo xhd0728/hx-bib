@@ -96,6 +96,10 @@ def _rewrite_venue_field(entry: Entry, field_name: str, opts: NormalizeOptions) 
     value = entry.get(field_name)
     if not value or opts.venue_style == "keep":
         return notes
+    if field_name == "booktitle" and value.strip().strip("{}").strip().lower() == "tbd":
+        # In a conference field this remains an ambiguous placeholder. Only
+        # journal={TBD} or an explicit journal name identifies the IEEE title.
+        return notes
     matched = match_venue(value)
     if not matched:
         return notes
