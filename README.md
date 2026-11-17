@@ -91,7 +91,7 @@ The tokenizer is deliberately conservative so formatting can never corrupt a tab
 ...
 ```
 
-The GUI page (`/table`, reachable via the header's **BibTeX tools ⇄ LaTeX tables** switch) offers a paste box, the `&`-style / blank-line / indent options, a per-table red/green diff, copy and `.tex` download.
+The GUI page (open it with the header's **BibTeX tools ⇄ LaTeX tables** switch — it's the same single-page app, also reachable at `/table`) offers a paste box, the `&`-style / blank-line / indent options, a result-first view (the formatted output, copy and `.tex` download) and a collapsible per-table before/after comparison. Changed tables are marked **layout only** when the cell/rule structure is identical — the formatter only touched whitespace and line breaks — versus **content changed** when something else differs (e.g. a `%` comment inside a table was dropped).
 
 ## Diff previews
 
@@ -104,7 +104,7 @@ The GUI goes one step further: three preview views (**itemized**, **side-by-side
 
 ## GUI workflow
 
-All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the sticky status bar — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. Validation results are grouped by severity (**all / error / warning / suggestion**, with counts) and every issue expands to show its entry, line, field and a fix hint. The two tool pages are switched from a prominent segmented control in the header. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both pages score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
+All tabs edit one **working copy**: a structured preview is computed first (nothing changes until you click *Apply*), each applied action becomes a staged step in the sticky status bar — click any step chip to jump back, or use undo / redo / reset — and the status bar always shows how far the working copy has drifted from the original file. Validation results are grouped by severity (**all / error / warning / suggestion**, with counts) and every issue expands to show its entry, line, field and a fix hint. The upload screen and every operation panel carry a short numbered flow (load → preview → apply), and the **BibTeX tools ⇄ LaTeX tables** switch in the header flips between the toolbox and the table formatter **in place** — instant, with no reload and no state loss. Settings (options, language, verify workers) persist in `localStorage`; the venue browser works with no file loaded. The UI is audited with Lighthouse: both modes score 99 performance with accessibility / best practices / SEO at 100 (a static first-paint skeleton mirrors the real page so content is visible before the websocket connects).
 
 ## Venue families
 

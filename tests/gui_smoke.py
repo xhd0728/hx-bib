@@ -142,7 +142,9 @@ async def main() -> None:
         user.find(marker="table-format").click()
         await settle()
         await user.should_see("个表格")
-        print("✓ table formatter: example loads and formats")
+        await user.should_see("格式化结果")
+        await user.should_see("修改前")
+        print("✓ table formatter: example loads and formats (result-first view)")
 
         user.find(marker="table-input").clear()
         user.find(marker="table-input").type("\\begin{tabular}{cc} a & b \\\\ \\end{tabular}")
@@ -150,6 +152,15 @@ async def main() -> None:
         await settle()
         await user.should_see("个表格")
         print("✓ table formatter: pasted table formats")
+
+        # In-page mode switch: the header control flips modes without reload.
+        user.find(marker="nav-tools").click()
+        await settle()
+        await user.should_see("上传 BibTeX 文件")
+        user.find(marker="nav-table").click()
+        await settle()
+        await user.should_see("LaTeX 表格格式化")
+        print("✓ header switch flips tools ⇄ table in place")
 
     print("\nAll GUI smoke checks passed.")
 

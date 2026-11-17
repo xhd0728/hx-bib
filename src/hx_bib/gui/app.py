@@ -42,7 +42,15 @@ from nicegui import events, ui
 
 from ..core import cleaner
 from ..core.diff import diff_documents, diff_lines, split_entries
-from ..core.latex_table import TableFormatOptions, find_tables, format_tables
+from ..core.latex_table import (
+    CommentLine,
+    Row,
+    Rule,
+    TableFormatOptions,
+    find_tables,
+    format_tables,
+    parse_table_body,
+)
 from ..core.model import Entry
 from ..core.normalize import NormalizeOptions, normalize_document
 from ..core.parser import parse_bibtex
@@ -114,12 +122,14 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
           border:1px solid var(--hx-line); border-radius:12px; }
 .hx-seg-item { display:inline-flex; align-items:center; gap:7px; text-decoration:none !important;
                font-size:13px; font-weight:700; color:#4b5563 !important; padding:6px 14px;
+               border:none; background:transparent; cursor:pointer; font-family:inherit;
                border-radius:9px; transition:background .15s,color .15s,box-shadow .15s;
                white-space:nowrap; }
-.hx-seg-item:hover { color:var(--hx-ink) !important; }
+.hx-seg-item:hover { color:var(--hx-ink) !important; background:rgba(255,255,255,.55); }
 .hx-seg-item .hx-seg-ico { font-size:16px; color:inherit; }
 .hx-seg-active { background:#fff; color:var(--hx-brand-ink) !important;
-                 box-shadow:0 1px 3px rgba(15,23,42,.14); }
+                 box-shadow:0 1px 3px rgba(15,23,42,.14); cursor:default; }
+.hx-seg-active:hover { background:#fff; }
 @media (max-width: 680px) { .hx-brand-sub { display:none; } }
 .hx-lang { color:var(--hx-brand-ink) !important; font-weight:700; }
 /* ---- hero (upload screen) ---- */
@@ -255,6 +265,48 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-pre { margin:0; padding:8px 10px; background:#f8fafc; border:1px solid #eef2f7;
           border-radius:8px; font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas,
           monospace; max-height:220px; overflow:auto; white-space:pre; }
+/* ---- LaTeX table results: full result + per-table before/after ---- */
+.hx-tblock { border:1px solid #e5e7eb; border-radius:12px; background:#fff;
+             margin:10px 0; overflow:hidden; }
+.hx-tblock > summary { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+                       padding:10px 14px; cursor:pointer; list-style:none;
+                       background:#f8fafc; font-size:13.5px; }
+.hx-tblock > summary::-webkit-details-marker { display:none; }
+.hx-tblock[open] > summary { border-bottom:1px solid #eee; }
+.hx-tblock-title { font-weight:700; color:var(--hx-ink); }
+.hx-tblock > .hx-tblock-body { padding:12px 14px; }
+.hx-tblock .hx-pre { max-height:420px; }
+.hx-tcompare > summary { background:#fff; }
+.hx-tcompare-ico { font-size:16px; color:#64748b; transition:transform .15s; }
+.hx-tcompare[open] .hx-tcompare-ico { transform:rotate(90deg); }
+.hx-tpanes { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start; }
+@media (max-width: 860px) { .hx-tpanes { grid-template-columns:1fr; } }
+.hx-tpane { min-width:0; }
+.hx-tpane-label { display:inline-flex; align-items:center; gap:5px; font-size:12px;
+                  font-weight:700; padding:2px 10px; border-radius:999px; }
+.hx-tpane-label .material-icons { font-size:14px; }
+.hx-tpane-before { color:#b91c1c; background:#fef2f2; }
+.hx-tpane-after { color:#15803d; background:#f0fdf4; }
+.hx-tpane .hx-pre { max-height:360px; }
+.hx-tnote { font-size:12.5px; color:#475569; background:#f8fafc; border:1px dashed #e2e8f0;
+            border-radius:8px; padding:7px 10px; margin:8px 0 0; grid-column:1/-1; }
+/* ---- 3-step journey strips ---- */
+.hx-flow { display:flex; gap:6px; align-items:center; justify-content:center;
+           flex-wrap:wrap; margin-top:14px; }
+.hx-flow-step { display:inline-flex; align-items:center; gap:7px; padding:5px 13px;
+                border-radius:999px; background:#fff; border:1px solid var(--hx-line);
+                font-size:12.5px; font-weight:600; color:#475569; }
+.hx-flow-num { display:inline-flex; width:17px; height:17px; border-radius:50%;
+               align-items:center; justify-content:center; background:#4338ca; color:#fff;
+               font-size:11px; font-weight:800; }
+.hx-flow-arrow { color:#94a3b8; font-size:16px; }
+.hx-steps { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin:2px 0; }
+.hx-steps span.hx-step { display:inline-flex; align-items:center; gap:6px; font-size:12px;
+                         color:#64748b; font-weight:600; }
+.hx-steps b { display:inline-flex; width:16px; height:16px; border-radius:50%;
+              background:#eef2ff; color:#4338ca; align-items:center;
+              justify-content:center; font-size:10.5px; font-weight:800; }
+.hx-steps .material-icons { font-size:14px; color:#cbd5e1; }
 .hx-entry-card { border:1px solid #e5e7eb !important; border-radius:10px !important;
                  box-shadow:none !important; }
 .q-tab { text-transform: none; }
@@ -446,6 +498,7 @@ def _opt(state: dict, path: str, key: str):
 def _new_state() -> dict:
     return {
         "lang": "zh",
+        "mode": "tools",    # tools | table — switched in-page, no reload
         "text": "",
         "baseline": "",
         "name": "",
@@ -460,6 +513,12 @@ def _new_state() -> dict:
         "run_control": None,
         "tab": "format",
         "venues_only": False,
+        # LaTeX table formatter (own inputs, independent of the working copy)
+        "source_text": "",
+        "amp": "space",
+        "blank_lines": True,
+        "row_indent": 0,
+        "result": None,     # (before_text, TableFormatResult)
         "settings": _merge_settings(DEFAULT_SETTINGS, {}),
         "settings_dirty": False,
     }
@@ -661,30 +720,113 @@ TABLE_EXAMPLE = r"""\begin{table}[t]
 """
 
 
-def table_diff_html(before: str, after: str, lang: str) -> str:
-    """Per-table side-by-side diff for the table formatter page."""
+def _table_signature(body: str) -> Optional[tuple]:
+    """Semantic signature of a table body — equal signatures mean the
+    formatting only re-arranged whitespace / line breaks, not content."""
+    try:
+        elements = parse_table_body(body)
+    except Exception:  # noqa: BLE001 - malformed body: fall back to text diff
+        return None
+    sig = []
+    for el in elements:
+        if isinstance(el, Row):
+            sig.append(("row", tuple((c.text.strip(), c.span) for c in el.cells)))
+        elif isinstance(el, Rule):
+            sig.append(("rule", el.text.strip()))
+        elif isinstance(el, CommentLine):
+            sig.append(("comment", el.text.strip()))
+    return tuple(sig)
+
+
+def _table_layout_only(before_body: str, after_body: str) -> bool:
+    """True when formatting only touched whitespace / line breaks.
+
+    Whitespace-insensitive text equality catches everything the formatter is
+    allowed to do (re-wrap rows, respace ``&``, re-indent); anything else —
+    e.g. a ``%`` comment dropped from inside the table — differs.
+    """
+    if re.sub(r"\s+", "", before_body) != re.sub(r"\s+", "", after_body):
+        return False
+    sig_l = _table_signature(before_body)
+    sig_r = _table_signature(after_body)
+    return sig_l is None or sig_l == sig_r
+
+
+def table_result_html(result_text: str, lang: str) -> str:
+    """The formatted output itself, front and centre (scrollable)."""
+    return (
+        f'<details class="hx-tblock" open>'
+        f"<summary>"
+        f'<span class="material-icons hx-tcompare-ico">auto_awesome</span>'
+        f'<span class="hx-tblock-title">{_esc(t(lang, "table_result_title"))}</span>'
+        f"</summary>"
+        f'<div class="hx-tblock-body"><pre class="hx-pre">{_esc(result_text)}</pre></div>'
+        f"</details>"
+    )
+
+
+def table_compare_html(before: str, after: str, lang: str) -> str:
+    """Per-table before / after comparison for the table formatter.
+
+    Each table is a collapsible block with two nowrap panes (修改前 /
+    格式化后) instead of a line-level diff — formatting merges multi-line
+    rows, so line pairing misleads. Modified tables open by default.
+    """
     b_slices, _ = find_tables(before)
     a_slices, _ = find_tables(after)
+    if not b_slices:
+        return ""
     blocks: List[str] = []
     for idx, (bs, asl) in enumerate(zip(b_slices, a_slices), start=1):
         left = before[bs.begin:bs.end]
         right = after[asl.begin:asl.end]
-        rows = diff_lines(left, right, bs.start_line, asl.start_line)
-        changed = any(r.kind != "equal" for r in rows)
+        changed = left != right
         kind = "modified" if changed else "unchanged"
+        layout_only = False
+        if changed:
+            layout_only = _table_layout_only(
+                before[bs.body_start:bs.body_end],
+                after[asl.body_start:asl.body_end],
+            )
+        extra = ""
+        if changed and layout_only:
+            extra = (
+                f'<span class="hx-chip" style="color:#0f766e;background:#0f766e1a">'
+                f'{_esc(t(lang, "table_layout_only"))}</span>'
+            )
+        elif changed:
+            extra = (
+                f'<span class="hx-chip" style="color:#b91c1c;background:#b91c1c1a">'
+                f'{_esc(t(lang, "table_content_changed"))}</span>'
+            )
         head = (
-            f'<div class="hx-ediff-head"><span class="hx-ediff-key">'
-            f'#{idx} · {_esc(bs.name)}{_esc(bs.colspec)}</span>'
+            f"<summary>"
+            f'<span class="material-icons hx-tcompare-ico">chevron_right</span>'
+            f'<span class="hx-ediff-key">#{idx} · {_esc(bs.name)}{_esc(bs.colspec)}</span>'
             f'<span class="hx-kind hx-kind-{kind}">{_esc(t(lang, "kind_" + kind))}</span>'
-            f'<span class="hx-tab-note">L{bs.start_line + 1}</span></div>'
+            f"{extra}"
+            f'<span class="hx-tab-note" style="margin-left:auto">L{bs.start_line + 1}</span>'
+            f"</summary>"
         )
         if not changed:
-            blocks.append(f'<section class="hx-ediff hx-ediff-unchanged">{head}</section>')
+            blocks.append(f'<details class="hx-tblock hx-tcompare">{head}</details>')
             continue
+        note = t(lang, "table_layout_note" if layout_only else "table_content_note")
         blocks.append(
-            f'<section class="hx-ediff hx-ediff-modified">{head}'
-            f'<div class="hx-ediff-body"><table class="hx-diff"><tbody>'
-            f'{_diff_rows_html(rows)}</tbody></table></div></section>'
+            f'<details class="hx-tblock hx-tcompare" open>{head}'
+            f'<div class="hx-tblock-body"><div class="hx-tpanes">'
+            f'<div class="hx-tpane">'
+            f'<span class="hx-tpane-label hx-tpane-before">'
+            f'<span class="material-icons">remove</span>'
+            f'{_esc(t(lang, "table_before"))}</span>'
+            f'<pre class="hx-pre">{_esc(left)}</pre></div>'
+            f'<div class="hx-tpane">'
+            f'<span class="hx-tpane-label hx-tpane-after">'
+            f'<span class="material-icons">check</span>'
+            f'{_esc(t(lang, "table_after"))}</span>'
+            f'<pre class="hx-pre">{_esc(right)}</pre></div>'
+            f'<div class="hx-tnote">{_esc(note)}</div>'
+            f"</div></div></details>"
         )
     return "".join(blocks)
 
@@ -874,11 +1016,12 @@ def _busy(button, busy: bool) -> None:
         pass
 
 
-def _header(lang: str, active: str, on_lang: Callable) -> None:
-    """Sticky app header shared by both pages (“tools” or “table” active).
+def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> None:
+    """Sticky app header shared by both modes (“tools” or “table” active).
 
-    The tool-page switch is a prominent segmented control in the centre —
-    BibTeX 工具 ⇄ LaTeX 表格 — instead of two easy-to-miss text links.
+    The mode switch is a segmented control in the centre — BibTeX 工具 ⇄
+    LaTeX 表格 — rendered as plain buttons that flip an in-page state flag,
+    so switching never reloads the app (no splash reflash, no layout jump).
     """
     sub = t(lang, "table_title") if active == "table" else t(lang, "subtitle")
     with ui.element("header").classes("hx-header w-full"):
@@ -895,12 +1038,17 @@ def _header(lang: str, active: str, on_lang: Callable) -> None:
             with ui.element("nav").classes("hx-seg").props(
                 f'aria-label="{t(lang, "nav_switch")}"'
             ):
-                for target, label_key, icon, key in (
-                    ("/", "nav_tools", "book", "tools"),
-                    ("/table", "nav_table", "grid_on", "table"),
+                for key, label_key, icon in (
+                    ("tools", "nav_tools", "book"),
+                    ("table", "nav_table", "grid_on"),
                 ):
-                    cls = "hx-seg-item" + (" hx-seg-active" if active == key else "")
-                    with ui.link(target=target).classes(cls).mark("nav-" + key):
+                    is_active = active == key
+                    cls = "hx-seg-item" + (" hx-seg-active" if is_active else "")
+                    btn = ui.element("button").classes(cls).mark("nav-" + key).props(
+                        'type="button"' + (' aria-current="page"' if is_active else "")
+                    )
+                    btn.on("click", lambda k=key: on_switch(k))
+                    with btn:
                         ui.icon(icon).classes("hx-seg-ico")
                         ui.label(t(lang, label_key))
             ui.button("中 / EN", on_click=on_lang).props(
@@ -918,182 +1066,177 @@ def _panel_head(icon: str, title: str, note: str) -> None:
             ui.label(note).classes("hx-tab-note")
 
 
+def _flow_html(lang: str, keys: List[str]) -> str:
+    """Pill-style ① → ② → ③ journey strip (upload page)."""
+    arrow = '<span class="material-icons hx-flow-arrow" aria-hidden="true">arrow_forward</span>'
+    steps = [
+        f'<span class="hx-flow-step"><span class="hx-flow-num">{i}</span>'
+        f"{_esc(t(lang, key))}</span>"
+        for i, key in enumerate(keys, 1)
+    ]
+    return '<div class="hx-flow">' + arrow.join(steps) + "</div>"
+
+
+def _steps_html(lang: str, keys: List[str]) -> str:
+    """Compact numbered breadcrumb for operation panels (no → pills)."""
+    chev = '<span class="material-icons" aria-hidden="true">chevron_right</span>'
+    steps = [
+        f'<span class="hx-step"><b>{i}</b>{_esc(t(lang, key))}</span>'
+        for i, key in enumerate(keys, 1)
+    ]
+    return '<div class="hx-steps">' + chev.join(steps) + "</div>"
+
+
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
 def register_pages() -> None:
-    """Register the NiceGUI page(s) — split from ``run_gui`` so tests can reuse it."""
+    """Register the NiceGUI app — split from ``run_gui`` so tests can reuse it.
+
+    Both ``/`` (BibTeX tools) and ``/table`` (LaTeX tables) build the same
+    single-page app; the header switch flips ``state["mode"]`` in place.
+    """
 
     @ui.page("/")
     def main_page() -> None:
-        ui.add_head_html(_head_html(
-            "hx-bib — format, clean, normalize, validate and verify BibTeX "
-            "bibliographies. BibTeX 整理、格式校验与多源引用核查工具。"
-        ))
-        ui.add_body_html(_splash_html("tools"))
-        # AA-compliant primary (WCAG contrast on white; NiceGUI's default fails).
-        ui.colors(primary="#4338ca", secondary="#0f766e", accent="#7c3aed")
-        state = _new_state()
-
-        def _apply_lang_attr() -> None:
-            if _IN_SIM:
-                return
-            try:
-                code = "zh-CN" if state["lang"] == "zh" else "en"
-                ui.run_javascript(f"document.documentElement.lang = {json.dumps(code)}")
-            except Exception:  # noqa: BLE001
-                pass
-
-        async def load_settings() -> None:
-            """Restore user preferences (language + widget options) from localStorage."""
-            try:
-                raw = await ui.run_javascript(
-                    f"localStorage.getItem({json.dumps(_SETTINGS_KEY)})"
-                )
-                if raw:
-                    state["settings"] = _merge_settings(DEFAULT_SETTINGS, json.loads(raw))
-                    state["lang"] = state["settings"].get("lang") or state["lang"]
-                    header.refresh()
-                    body.refresh()
-            except Exception:  # noqa: BLE001 - no JS/browser: keep defaults
-                pass
-
-        async def flush_settings() -> None:
-            if not state["settings_dirty"] or _IN_SIM:
-                return
-            state["settings_dirty"] = False
-            try:
-                encoded = json.dumps(json.dumps(state["settings"]))
-                await ui.run_javascript(
-                    f"localStorage.setItem({json.dumps(_SETTINGS_KEY)}, {encoded})"
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-        if not _IN_SIM:
-            ui.timer(0.15, load_settings, once=True)
-        ui.timer(1.2, flush_settings)
-        _apply_lang_attr()
-
-        def toggle_lang() -> None:
-            state["lang"] = "en" if state["lang"] == "zh" else "zh"
-            state["settings"]["lang"] = state["lang"]
-            state["settings_dirty"] = True
-            _apply_lang_attr()
-            header.refresh()
-            body.refresh()
-
-        with ui.element("div").classes("hx-page w-full"):
-            @ui.refreshable
-            def header() -> None:
-                _header(state["lang"], "tools", toggle_lang)
-            header()
-
-            with ui.element("main").classes(
-                "w-full max-w-6xl mx-auto px-4 pt-5 pb-10"
-            ):
-                # ---------------- body ----------------
-                @ui.refreshable
-                def body() -> None:
-                    lang = state["lang"]
-                    with ui.element("div").classes("w-full"):
-                        if state["venues_only"]:
-                            _render_venues_only(state, lang, body)
-                            return
-                        if not state["text"]:
-                            _render_upload(state, lang, body)
-                            return
-
-                        doc = parse_bibtex(state["text"])
-                        with ui.column().classes("w-full gap-4"):
-                            _render_status_bar(state, lang, doc, body)
-
-                            tab_defs = [
-                                ("format", t(lang, "tab_format")),
-                                ("clean", t(lang, "tab_clean")),
-                                ("normalize", t(lang, "tab_normalize")),
-                                ("check", t(lang, "tab_check")),
-                                ("verify", t(lang, "tab_verify")),
-                                ("venues", t(lang, "tab_venues")),
-                            ]
-                            with ui.tabs(value=state["tab"]).classes(
-                                "hx-tabs w-full"
-                            ).props("align=left inline-label no-caps") as tabs:
-                                for key, label in tab_defs:
-                                    ui.tab(key, label).mark(f"tab-{key}")
-
-                            tabs.on_value_change(lambda e: state.update(tab=e.value))
-
-                            with ui.tab_panels(tabs, value=state["tab"]).classes(
-                                "w-full bg-transparent"
-                            ):
-                                for key, _ in tab_defs:
-                                    with ui.tab_panel(key).classes("p-0 pt-4"):
-                                        _build_panel(key, state, lang, doc, body)
-
-                body()
+        _build_page("tools")
 
     @ui.page("/table")
     def table_page() -> None:
+        _build_page("table")
+
+
+def _build_page(initial_mode: str) -> None:
+    if initial_mode == "table":
         ui.add_head_html(_head_html(
             "hx-bib LaTeX table formatter — one row per line, tidy & and rules. "
             "LaTeX 表格格式化工具。"
         ))
-        ui.add_body_html(_splash_html("table"))
-        ui.colors(primary="#4338ca", secondary="#0f766e", accent="#7c3aed")
-        state: dict = {
-            "lang": "zh",
-            "source_text": "",
-            "amp": "space",
-            "blank_lines": True,
-            "row_indent": 0,
-            "result": None,        # (before_text, TableFormatResult)
-        }
+    else:
+        ui.add_head_html(_head_html(
+            "hx-bib — format, clean, normalize, validate and verify BibTeX "
+            "bibliographies. BibTeX 整理、格式校验与多源引用核查工具。"
+        ))
+    ui.add_body_html(_splash_html(initial_mode))
+    # AA-compliant primary (WCAG contrast on white; NiceGUI's default fails).
+    ui.colors(primary="#4338ca", secondary="#0f766e", accent="#7c3aed")
+    state = _new_state()
+    state["mode"] = initial_mode
 
-        def _apply_lang_attr() -> None:
-            if _IN_SIM:
-                return
+    def _apply_lang_attr() -> None:
+        if _IN_SIM:
+            return
+        try:
+            code = "zh-CN" if state["lang"] == "zh" else "en"
+            ui.run_javascript(f"document.documentElement.lang = {json.dumps(code)}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def load_settings() -> None:
+        """Restore user preferences (language + widget options) from localStorage."""
+        try:
+            raw = await ui.run_javascript(
+                f"localStorage.getItem({json.dumps(_SETTINGS_KEY)})"
+            )
+            if raw:
+                state["settings"] = _merge_settings(DEFAULT_SETTINGS, json.loads(raw))
+                state["lang"] = state["settings"].get("lang") or state["lang"]
+                header.refresh()
+                body.refresh()
+        except Exception:  # noqa: BLE001 - no JS/browser: keep defaults
+            pass
+
+    async def flush_settings() -> None:
+        if not state["settings_dirty"] or _IN_SIM:
+            return
+        state["settings_dirty"] = False
+        try:
+            encoded = json.dumps(json.dumps(state["settings"]))
+            await ui.run_javascript(
+                f"localStorage.setItem({json.dumps(_SETTINGS_KEY)}, {encoded})"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not _IN_SIM:
+        ui.timer(0.15, load_settings, once=True)
+    ui.timer(1.2, flush_settings)
+    _apply_lang_attr()
+
+    def toggle_lang() -> None:
+        state["lang"] = "en" if state["lang"] == "zh" else "zh"
+        state["settings"]["lang"] = state["lang"]
+        state["settings_dirty"] = True
+        _apply_lang_attr()
+        header.refresh()
+        body.refresh()
+
+    def switch_mode(mode: str) -> None:
+        """Flip between the BibTeX workspace and the LaTeX table formatter in place."""
+        if state["mode"] == mode:
+            return
+        state["mode"] = mode
+        if not _IN_SIM:
             try:
-                code = "zh-CN" if state["lang"] == "zh" else "en"
-                ui.run_javascript(f"document.documentElement.lang = {json.dumps(code)}")
+                path = "/table" if mode == "table" else "/"
+                ui.run_javascript(
+                    f"history.pushState(null, '', {json.dumps(path)})"
+                )
             except Exception:  # noqa: BLE001
                 pass
+        header.refresh()
+        body.refresh()
 
-        async def load_lang() -> None:
-            try:
-                raw = await ui.run_javascript(
-                    f"localStorage.getItem({json.dumps(_SETTINGS_KEY)})"
-                )
-                if raw:
-                    state["lang"] = json.loads(raw).get("lang") or "zh"
-                    header.refresh()
-                    body.refresh()
-            except Exception:  # noqa: BLE001 - no JS/browser: keep default
-                pass
+    with ui.element("div").classes("hx-page w-full"):
+        @ui.refreshable
+        def header() -> None:
+            _header(state["lang"], state["mode"], toggle_lang, switch_mode)
+        header()
 
-        if not _IN_SIM:
-            ui.timer(0.15, load_lang, once=True)
-        _apply_lang_attr()
-
-        def toggle_lang() -> None:
-            state["lang"] = "en" if state["lang"] == "zh" else "zh"
-            _apply_lang_attr()
-            header.refresh()
-            body.refresh()
-
-        with ui.element("div").classes("hx-page w-full"):
+        with ui.element("main").classes("w-full max-w-6xl mx-auto px-4 pt-5 pb-10"):
+            # ---------------- body ----------------
             @ui.refreshable
-            def header() -> None:
-                _header(state["lang"], "table", toggle_lang)
-            header()
+            def body() -> None:
+                lang = state["lang"]
+                with ui.element("div").classes("w-full"):
+                    if state["mode"] == "table":
+                        _render_table_page(state, lang, body)
+                        return
+                    if state["venues_only"]:
+                        _render_venues_only(state, lang, body)
+                        return
+                    if not state["text"]:
+                        _render_upload(state, lang, body)
+                        return
 
-            with ui.element("main").classes(
-                "w-full max-w-6xl mx-auto px-4 pt-5 pb-10"
-            ):
-                @ui.refreshable
-                def body() -> None:
-                    _render_table_page(state, state["lang"], body)
-                body()
+                    doc = parse_bibtex(state["text"])
+                    with ui.column().classes("w-full gap-4"):
+                        _render_status_bar(state, lang, doc, body)
+
+                        tab_defs = [
+                            ("format", t(lang, "tab_format"), "brush"),
+                            ("clean", t(lang, "tab_clean"), "cleaning_services"),
+                            ("normalize", t(lang, "tab_normalize"), "auto_fix_high"),
+                            ("check", t(lang, "tab_check"), "rule"),
+                            ("verify", t(lang, "tab_verify"), "travel_explore"),
+                            ("venues", t(lang, "tab_venues"), "stadium"),
+                        ]
+                        with ui.tabs(value=state["tab"]).classes(
+                            "hx-tabs w-full"
+                        ).props("align=left inline-label no-caps") as tabs:
+                            for key, label, icon in tab_defs:
+                                ui.tab(key, label, icon=icon).mark(f"tab-{key}")
+
+                        tabs.on_value_change(lambda e: state.update(tab=e.value))
+
+                        with ui.tab_panels(tabs, value=state["tab"]).classes(
+                            "w-full bg-transparent"
+                        ):
+                            for key, _, _ in tab_defs:
+                                with ui.tab_panel(key).classes("p-0 pt-4"):
+                                    _build_panel(key, state, lang, doc, body)
+
+            body()
 
 
 def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> None:
@@ -1128,6 +1271,7 @@ def _render_upload(state: dict, lang: str, body) -> None:
         )
         ui.label(t(lang, "upload_title")).classes("hx-hero-title")
         ui.label(t(lang, "upload_hint")).classes("hx-hero-sub")
+        ui.html(_flow_html(lang, ["flow_load", "flow_operate", "flow_export"]))
 
     with ui.card().classes("hx-card w-full max-w-3xl mx-auto p-6 gap-5 mt-4"):
         async def on_upload(e: events.UploadEventArguments) -> None:
@@ -1234,7 +1378,8 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
 # ---------------------------------------------------------------------------
 def _render_table_page(state: dict, lang: str, body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("grid_on", t(lang, "table_paste_title"), t(lang, "table_note"))
+        _panel_head("grid_on", t(lang, "table_title"), t(lang, "table_note"))
+        ui.label(t(lang, "table_paste_title")).classes("hx-tab-note")
         source = ui.textarea(
             placeholder=t(lang, "table_paste_placeholder"),
         ).classes("w-full").props(
@@ -1334,7 +1479,14 @@ def _render_table_page(state: dict, lang: str, body) -> None:
         if result.tables == 0:
             ui.html(f'<div class="hx-empty">{_esc(t(lang, "table_no_tables"))}</div>')
         else:
-            ui.html(table_diff_html(before, result.text, lang))
+            # Result first: the formatted text is the main output…
+            ui.html(table_result_html(result.text, lang)).classes("w-full")
+            # …then an opt-in, per-table before/after view for checking.
+            if result.text != before:
+                ui.label(t(lang, "table_compare_title")).classes(
+                    "hx-tab-note font-bold"
+                )
+                ui.html(table_compare_html(before, result.text, lang)).classes("w-full")
         if result.warnings:
             with ui.expansion(
                 t(lang, "table_warnings").format(n=len(result.warnings)), icon="info",
@@ -1544,6 +1696,9 @@ def _render_preview(container: ui.column, state: dict, lang: str,
     container.clear()
     with container:
         with ui.card().classes("hx-card w-full p-5 gap-3"):
+            ui.label(t(lang, "preview_title")).classes("hx-panel-title").mark(
+                "preview-title"
+            )
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
                 ui.html(_summary_line(before, result_text, lang))
                 with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -1616,6 +1771,7 @@ def _render_preview(container: ui.column, state: dict, lang: str,
 def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("brush", t(lang, "tab_format"), t(lang, "format_note"))
+        ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
         with ui.row().classes("gap-4 items-end flex-wrap"):
             indent = _bind(ui.select(
                 {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
@@ -1679,6 +1835,7 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
               "note", "address", "editor", "publisher", "eprint", "volume", "number"]
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("cleaning_services", t(lang, "tab_clean"), t(lang, "clean_note"))
+        ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
 
         ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
         remove_select = _bind(ui.select(
@@ -1779,6 +1936,7 @@ def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
 def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("auto_fix_high", t(lang, "tab_normalize"), t(lang, "normalize_note"))
+        ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
         with ui.row().classes("gap-6 items-start flex-wrap"):
             with ui.column().classes("gap-1"):
                 ui.label(t(lang, "venue_style")).classes("text-sm font-semibold")
@@ -1842,6 +2000,8 @@ def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
 def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("rule", t(lang, "tab_check"), t(lang, "check_note"))
+        ui.html(_steps_html(lang, ["steps_check_run", "steps_check_filter",
+                                   "steps_check_detail"]))
         run_button = ui.button(t(lang, "run_check"), icon="rule").props(
             "unelevated color=primary"
         ).mark("run-check")
@@ -1931,6 +2091,8 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
 def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
     with ui.card().classes("hx-card w-full p-5 gap-4"):
         _panel_head("travel_explore", t(lang, "tab_verify"), t(lang, "verify_note"))
+        ui.html(_steps_html(lang, ["steps_verify_run", "steps_verify_review",
+                                   "steps_verify_result"]))
         with ui.row().classes("gap-4 items-end flex-wrap"):
             only = ui.input(t(lang, "only_keys")).classes("w-80")
             delay = _bind(ui.number(
