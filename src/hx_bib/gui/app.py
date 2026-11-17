@@ -2384,7 +2384,7 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
                         ui.label(t(lang, "no_venues"))
                     return
                 with ui.element("div").classes("w-full").style(
-                    "display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));"
+                    "display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr));"
                     "gap:12px"
                 ):
                     for venue in venues:

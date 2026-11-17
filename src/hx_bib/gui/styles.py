@@ -313,6 +313,8 @@ html, body { height:100%; overflow:hidden; }
 .hx-history .q-btn { flex:none; }
 .hx-vrow-val { flex:1; min-width:0; }
 .hx-vrow .q-btn { flex:none; }
+.hx-venue-card { min-width:0; }
+.hx-venue-card > .nicegui-row:first-child { flex-wrap:wrap; gap:6px; }
 .hx-panel-title, .hx-tab-note, .hx-issue-key { overflow-wrap:anywhere; }
 .q-field textarea { resize:vertical; }
 .q-dialog .q-card { min-width:0 !important; width:420px; max-width:calc(100vw - 32px); }
@@ -330,7 +332,7 @@ html, body { height:100%; overflow:hidden; }
   .hx-main { padding:12px 8px; }
   .hx-hero-title { font-size:25px; }
   .hx-hero-sub { font-size:13px; padding:0 8px; }
-  .hx-body > .hx-card, .hx-options, .hx-preview > .hx-card { padding:16px; }
+  .hx-body > .hx-card, .hx-panel-scroll > .hx-card, .hx-options, .hx-preview > .hx-card { padding:16px; }
   .hx-options > .nicegui-row:not(.hx-panel-head) { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .hx-body .q-field { max-width:100%; min-width:0; }
   .hx-status-meta { gap:6px; }
