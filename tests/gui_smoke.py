@@ -74,8 +74,10 @@ async def main() -> None:
         print("✓ all three preview views switch correctly")
 
         # Mode changes preserve the preview instead of rebuilding it empty.
+        nav_widget = next(iter(user.find(marker="nav-table").elements))
         user.find(marker="nav-table").click()
         await settle()
+        assert next(iter(user.find(marker="nav-table").elements)) is nav_widget
         user.find(marker="nav-tools").click()
         await settle()
         await user.should_see(marker="apply-btn")

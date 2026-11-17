@@ -726,7 +726,7 @@ def _draft(widget, state: dict, key: str, default=""):
     return widget
 
 
-def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> None:
+def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> dict:
     """Sticky app header shared by both modes (“tools” or “table” active).
 
     The mode switch is a segmented control in the centre — BibTeX 工具 ⇄
@@ -734,6 +734,7 @@ def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> N
     so switching never reloads the app (no splash reflash, no layout jump).
     """
     sub = t(lang, "table_title") if active == "table" else t(lang, "subtitle")
+    controls = {"buttons": {}}
     with ui.element("header").classes("hx-header w-full"):
         with ui.row().classes(
             "hx-header-inner w-full max-w-6xl mx-auto px-4 items-center justify-between no-wrap gap-3"
@@ -744,7 +745,7 @@ def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> N
                 with ui.column().classes("gap-0"):
                     with ui.element("h1").classes("m-0"):
                         ui.label("hx-bib").classes("hx-brand")
-                    ui.label(sub).classes("hx-brand-sub")
+                    controls["subtitle"] = ui.label(sub).classes("hx-brand-sub")
             with ui.element("nav").classes("hx-seg").props(
                 f'aria-label="{t(lang, "nav_switch")}"'
             ):
@@ -757,6 +758,7 @@ def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> N
                     btn = ui.element("button").classes(cls).mark("nav-" + key).props(
                         'type="button"' + (' aria-current="page"' if is_active else "")
                     )
+                    controls["buttons"][key] = btn
                     btn.on("click", lambda k=key: on_switch(k))
                     with btn:
                         ui.icon(icon).classes("hx-seg-ico")
@@ -765,6 +767,7 @@ def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> N
                 "flat dense no-caps "
                 "aria-label='中 / EN — 切换语言 / Switch language'"
             ).classes("hx-lang")
+    return controls
 
 
 def _panel_head(icon: str, title: str, note: str) -> None:
@@ -899,13 +902,24 @@ def _build_page(initial_mode: str) -> None:
                 )
             except Exception:  # noqa: BLE001
                 pass
-        header.refresh()
+        header_widgets["subtitle"].set_text(t(
+            state["lang"], "table_title" if mode == "table" else "subtitle",
+        ))
+        for key, button in header_widgets["buttons"].items():
+            button.classes(add="hx-seg-active" if key == mode else "",
+                           remove="hx-seg-active" if key != mode else "")
+            if key == mode:
+                button.props('aria-current="page"')
+            else:
+                button.props(remove="aria-current")
         body.refresh()
 
     with ui.element("div").classes("hx-page w-full"):
+        header_widgets = {}
+
         @ui.refreshable
         def header() -> None:
-            _header(state["lang"], state["mode"], toggle_lang, switch_mode)
+            header_widgets.update(_header(state["lang"], state["mode"], toggle_lang, switch_mode))
         header()
 
         with ui.element("main").classes("hx-main w-full mx-auto px-4 py-4"):

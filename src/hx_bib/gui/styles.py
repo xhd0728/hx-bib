@@ -44,7 +44,10 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-header { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,.86);
              backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
              border-bottom: 1px solid var(--hx-line); }
-.hx-header-inner { min-height: 60px; }
+.hx-header-inner { min-height:60px; display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); }
+.hx-header-inner > .nicegui-row { min-width:0; }
+.hx-header-inner > .hx-seg { justify-self:center; }
+.hx-header-inner > .hx-lang { justify-self:end; }
 .hx-logo { width:34px; height:34px; border-radius:10px; display:flex; align-items:center;
            justify-content:center; background:linear-gradient(135deg,#4338ca,#7c3aed);
            color:#fff; font-weight:800; font-size:13px; letter-spacing:.02em;
@@ -267,7 +270,6 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 button:focus-visible, .q-field:focus-within { outline: 2px solid #6366f1; outline-offset: 1px; }
 /* The document never changes height when a result/tab changes. Each workspace
    panel owns its scrolling; toolbar and navigation remain in normal flex flow. */
-html { scrollbar-gutter:stable; }
 html, body { height:100%; overflow:hidden; }
 .nicegui-content { padding:0; gap:0; height:100dvh; }
 .hx-page { height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
