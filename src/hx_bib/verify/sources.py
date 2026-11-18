@@ -70,6 +70,12 @@ _ARXIV_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/sche
 _CROSSREF_PUBLICATION_TYPES = {"journal-article", "proceedings-article"}
 
 
+def _http_error(net: Net, status: Optional[int]) -> str:
+    if status is None:
+        return getattr(net, "last_error", None) or "connection failed or timed out"
+    return "empty response" if status == 200 else f"HTTP {status}"
+
+
 def publication_matches(reference: SourceRecord, candidate: SourceRecord) -> bool:
     """Require a close title and a shared author before linking two records."""
     generic = {"team", "group", "anonymous", "collaboration"}
@@ -158,7 +164,7 @@ def arxiv_abs_lookup(net: Net, arxiv_id: str) -> SourceRecord:
     if status in (404, 410):
         return SourceRecord(source="arXiv", found=False, note="abs page 404")
     if status != 200 or not body:
-        return SourceRecord(source="arXiv", found=False, error=True, note=f"abs HTTP {status}")
+        return SourceRecord(source="arXiv", found=False, error=True, note=f"abs page: {_http_error(net, status)}")
     meta = _parse_meta_tags(body)
     titles = meta.get("citation_title")
     if not titles:
@@ -259,7 +265,7 @@ def crossref_lookup(net: Net, doi: str) -> SourceRecord:
     if status == 404:
         return SourceRecord(source="Crossref", found=False, note="DOI not registered")
     if status != 200 or not body:
-        return SourceRecord(source="Crossref", found=False, error=True, note=f"HTTP {status}")
+        return SourceRecord(source="Crossref", found=False, error=True, note=_http_error(net, status))
     try:
         msg = json.loads(body)["message"]
     except (ValueError, KeyError):
@@ -279,7 +285,7 @@ def crossref_search(net: Net, title: str, first_author: Optional[str] = None) ->
         url += "&query.author=" + urllib.parse.quote(first_author)
     status, body = net.get(url, accept="application/json")
     if status != 200 or not body:
-        return SourceRecord(source="Crossref", found=False, error=True, note=f"HTTP {status}")
+        return SourceRecord(source="Crossref", found=False, error=True, note=_http_error(net, status))
     try:
         items = json.loads(body)["message"]["items"]
     except (ValueError, KeyError):
@@ -318,7 +324,7 @@ def crossref_publication(net: Net, reference: SourceRecord) -> SourceRecord:
             "https://api.crossref.org/works?" + params, accept="application/json", retries=1, timeout=8,
         )
         if status != 200:
-            return SourceRecord("Crossref", False, error=True, note=f"HTTP {status}")
+            return SourceRecord("Crossref", False, error=True, note=_http_error(net, status))
         try:
             items = json.loads(body)["message"]["items"]
         except (ValueError, KeyError, TypeError):
@@ -361,7 +367,7 @@ def dblp_search(net: Net, title: str, first_author: Optional[str] = None,
     url = "https://dblp.org/search/publ/api?format=json&h=30&q=" + urllib.parse.quote(q)
     status, body = net.get(url, accept="application/json", retries=retries, timeout=timeout)
     if status != 200 or not body:
-        return SourceRecord(source="DBLP", found=False, error=True, note=f"HTTP {status}")
+        return SourceRecord(source="DBLP", found=False, error=True, note=_http_error(net, status))
     try:
         hits = json.loads(body)["result"]["hits"]
     except (ValueError, KeyError):
@@ -412,22 +418,32 @@ _OPENREVIEW_NOTES = "https://api2.openreview.net/notes"
 
 
 def _openreview_record(note: dict) -> Optional[SourceRecord]:
+    if not isinstance(note, dict):
+        return None
     content = note.get("content", {})
+    if not isinstance(content, dict):
+        return None
 
     def value_of(key: str):
         value = content.get(key)
-        return value.get("value") if isinstance(value, dict) else value
+        return value["value"] if isinstance(value, dict) and "value" in value else value
 
-    title = (value_of("title") or "").strip()
+    def text_of(key: str) -> str:
+        value = value_of(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    title = text_of("title")
     forum = note.get("forum") or note.get("id")
     if not title or not forum:
         return None
-    raw_authors = value_of("authors") or []
-    if isinstance(raw_authors, str):
-        raw_authors = [raw_authors]
-    raw_authors = [author for author in raw_authors if author and author.lower() != "anonymous"]
-    venue_id = value_of("venueid") or ""
-    venue = (value_of("venue") or venue_id).strip()
+    raw_authors = []
+    for author in _as_list(value_of("authors")):
+        if isinstance(author, dict):
+            author = author.get("fullname")
+        if isinstance(author, str) and (name := author.strip()) and name.casefold() != "anonymous":
+            raw_authors.append(name)
+    venue_id = text_of("venueid")
+    venue = text_of("venue") or venue_id
     year_match = re.search(r"(19|20)\d\d", venue)
     year = year_match.group(0) if year_match else None
     if year is None:
@@ -454,26 +470,29 @@ def _openreview_record(note: dict) -> Optional[SourceRecord]:
 
 
 def openreview_lookup(net: Net, oid: str) -> SourceRecord:
-    errored = False
+    failure = None
     for parameter in ("id", "forum"):
         url = _OPENREVIEW_NOTES + "?" + urllib.parse.urlencode({parameter: oid})
         status, body = net.get(url, accept="application/json")
         if status != 200:
-            errored = True
+            failure = _http_error(net, status)
             continue
         try:
             notes = json.loads(body).get("notes", [])
         except (ValueError, AttributeError):
-            errored = True
+            failure = "parse error"
+            continue
+        if not isinstance(notes, list):
+            failure = "parse error"
             continue
         for note in notes:
-            if note.get("id") == oid:
+            if isinstance(note, dict) and note.get("id") == oid:
                 record = _openreview_record(note)
                 if record is not None:
                     return record
     return SourceRecord(
-        source="OpenReview", found=False, error=errored,
-        note="could not reach OpenReview" if errored else "forum id not found",
+        source="OpenReview", found=False, error=failure is not None,
+        note=failure or "forum id not found",
     )
 
 
@@ -484,10 +503,12 @@ def openreview_publication(net: Net, reference: SourceRecord) -> SourceRecord:
             f"{_OPENREVIEW_NOTES}/search?{params}", accept="application/json", retries=1, timeout=8,
         )
         if status != 200:
-            return SourceRecord("OpenReview", False, error=True, note=f"HTTP {status}")
+            return SourceRecord("OpenReview", False, error=True, note=_http_error(net, status))
         try:
             notes = json.loads(body)["notes"]
         except (KeyError, TypeError, ValueError):
+            return SourceRecord("OpenReview", False, error=True, note="parse error")
+        if not isinstance(notes, list):
             return SourceRecord("OpenReview", False, error=True, note="parse error")
         for note in notes:
             record = _openreview_record(note)

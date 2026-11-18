@@ -142,6 +142,10 @@ def _card(result: CheckResult) -> str:
     border = PALETTE[verdict][0]
     title = _esc(delatex(entry.get("title") or ""))
     ids = _ids_html(result)
+    attempts = ""
+    if result.attempt_errors:
+        errors = "".join(f"<li>Attempt {number}: {_esc(detail)}</li>" for number, detail in result.attempt_errors)
+        attempts = f"<details><summary>{result.attempts} attempts · Errors and timeouts</summary><ul>{errors}</ul></details>"
     return f"""
       <article class="card" data-verdict="{verdict}" style="border-left:6px solid {border}">
         <div class="card-head">
@@ -152,6 +156,7 @@ def _card(result: CheckResult) -> str:
         <div class="title">{title}</div>
         {f'<div class="ids">{ids}</div>' if ids else ''}
         <ul class="findings">{_finding_items(result)}</ul>
+        {attempts}
         {_author_diff_html(result)}
         {_evidence_html(result)}
       </article>"""
@@ -312,6 +317,8 @@ def build_json(results: List[CheckResult], bibfile: str) -> str:
                 {"status": r.publication[0], "evidence": r.publication[1], "url": r.publication_url}
                 if r.publication else None
             ),
+            "attempts": r.attempts,
+            "attempt_errors": [{"attempt": number, "detail": detail} for number, detail in r.attempt_errors],
             "doi": r.doi,
             "openreview_id": r.openreview_id,
             "issues": [{"severity": s, "message": m} for s, m in r.issues],

@@ -72,6 +72,7 @@ class Net:
         self._host_penalty: Dict[str, float] = {}
         self._lock = threading.Lock()      # protects throttling state
         self._save_lock = threading.Lock()  # serializes cache writes
+        self._request = threading.local()
         self.arxiv_prefetch: Optional[Dict[str, Optional[dict]]] = None
         if use_cache and os.path.exists(self.cache_path):
             try:
@@ -92,7 +93,7 @@ class Net:
                 )
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        json.dump(self.cache, fh)
+                        json.dump(self.cache.copy(), fh)
                     os.replace(tmp, self.cache_path)
                 except BaseException:
                     try:
@@ -118,6 +119,11 @@ class Net:
             if host:
                 self._host_last[host] = t
 
+    @property
+    def last_error(self) -> Optional[str]:
+        """Transport failure from the current thread's last request, if any."""
+        return getattr(self._request, "error", None)
+
     def get(
         self,
         url: str,
@@ -126,6 +132,7 @@ class Net:
         ua: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> Tuple[Optional[int], str]:
+        self._request.error = None
         cache_key = (accept or "") + "|" + url
         if self.use_cache and (entry := self.cache.get(cache_key)):
             status, fetched_at = entry.get("status"), entry.get("fetched_at", 0)
@@ -163,10 +170,12 @@ class Net:
                     continue
                 result = (exc.code, body)
                 break
-            except Exception:  # URLError, timeout, SSL reset, …
+            except Exception as exc:  # URLError, timeout, SSL reset, …
                 if attempt < retries - 1:
                     time.sleep(1.0 * (attempt + 1))
                     continue
+                reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+                self._request.error = f"{type(reason).__name__}: {reason}"
                 result = (None, "")
                 break
 

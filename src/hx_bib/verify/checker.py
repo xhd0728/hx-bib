@@ -12,6 +12,7 @@ The verdict model mirrors the reference ``hallu-citation-check`` demo:
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -59,6 +60,7 @@ PAPER_TYPES = {
     "article", "inproceedings", "incollection", "inbook", "book",
     "phdthesis", "mastersthesis", "techreport", "conference",
 }
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -75,6 +77,8 @@ class CheckResult:
     any_error: bool = False
     publication: Optional[Tuple[str, str]] = None
     publication_url: Optional[str] = None
+    attempts: int = 1
+    attempt_errors: List[Tuple[int, str]] = field(default_factory=list)
 
     def worst_severity(self) -> str:
         if not self.issues:
@@ -277,6 +281,49 @@ def _arxiv_publication(arxiv: SourceRecord, *records: Optional[SourceRecord]) ->
     return ("unavailable", ", ".join(unavailable)) if unavailable else ("not_found", "")
 
 
+def _find_publication(net: Net, arxiv: SourceRecord, indexes: list, evidence: list) -> tuple:
+    publication = _arxiv_publication(arxiv, *indexes)
+    if arxiv.title and arxiv.authors and publication[0] not in ("record", "accepted", "reference"):
+        for search in (openreview_publication, crossref_publication, dblp_publication):
+            record = search(net, arxiv)
+            indexes.append(record)
+            evidence.append(record)
+            publication = _arxiv_publication(arxiv, *indexes)
+            if publication[0] in ("record", "accepted"):
+                break
+    indexed = _indexed_publication(arxiv, indexes)
+    url = indexed.url if indexed else arxiv.url if publication[0] in ("reference", "comment") else None
+    return publication, url
+
+
+def verify_arxiv_entry(net: Net, entry: Entry) -> CheckResult:
+    """Check publication evidence without unrelated citation or URL checks."""
+    arxiv_id = extract_arxiv_id(entry)
+    if not arxiv_id:
+        return CheckResult(entry, INFO)
+    arxiv = arxiv_lookup(net, arxiv_id)
+    arxiv.queried = arxiv_id
+    evidence = [arxiv]
+    indexes = []
+    url = None
+    if arxiv.found:
+        if _arxiv_publication(arxiv)[0] != "reference":
+            if doi := extract_doi(entry):
+                indexes.append(crossref_lookup(net, doi))
+            if openreview_id := extract_openreview_id(entry):
+                indexes.append(openreview_lookup(net, openreview_id))
+            evidence.extend(indexes)
+        publication, url = _find_publication(net, arxiv, indexes, evidence)
+    else:
+        publication = ("unavailable", "arXiv") if arxiv.error else ("missing", "")
+    status, detail = publication
+    failed = any(record.error for record in evidence) and status in ("unavailable", "comment")
+    message = f"arXiv publication: {status}" + (f" ({detail})" if detail else "")
+    return CheckResult(entry, OK if status in ("record", "accepted", "reference") else INFO,
+                       issues=[(INFO, message)], evidence=evidence, arxiv_id=arxiv_id,
+                       any_error=failed, publication=publication, publication_url=url)
+
+
 def verify_entry(net: Net, entry: Entry) -> CheckResult:
     fields = entry.fields
     bib_title = fields.get("title", "")
@@ -360,20 +407,7 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
         publication = ("unavailable", "arXiv")
         if arxiv_rec is not None:
             indexes = [record for name, record in records.items() if name != "arXiv"]
-            publication = _arxiv_publication(arxiv_rec, *indexes)
-            if arxiv_rec.title and arxiv_rec.authors and publication[0] not in ("record", "accepted", "reference"):
-                for search in (openreview_publication, crossref_publication, dblp_publication):
-                    indexed = search(net, arxiv_rec)
-                    indexes.append(indexed)
-                    evidence.append(indexed)
-                    publication = _arxiv_publication(arxiv_rec, *indexes)
-                    if publication[0] in ("record", "accepted"):
-                        break
-            indexed = _indexed_publication(arxiv_rec, indexes)
-            if indexed:
-                publication_url = indexed.url
-            elif publication[0] in ("reference", "comment"):
-                publication_url = arxiv_rec.url
+            publication, publication_url = _find_publication(net, arxiv_rec, indexes, evidence)
             sources = {
                 "record": "Matching publication record",
                 "accepted": "Public acceptance record",
@@ -499,12 +533,47 @@ def prefetch_arxiv(net: Net, entries: List[Entry]) -> None:
     net.save()
 
 
+def _safe_check(net: Net, entry: Entry, check) -> CheckResult:
+    try:
+        return check(net, entry)
+    except Exception as exc:  # noqa: BLE001 - keep the rest of the batch running
+        arxiv_id = extract_arxiv_id(entry)
+        if not isinstance(exc, (TimeoutError, ConnectionError)):
+            logger.exception("Verification failed for %s (arXiv %s)", entry.key, arxiv_id or "—")
+        severity = INFO if check is verify_arxiv_entry else WARN
+        return CheckResult(entry, severity, issues=[(severity, f"{type(exc).__name__}: {exc}")],
+                           arxiv_id=arxiv_id, any_error=True)
+
+
+def _check_with_retries(net: Net, entry: Entry, check, retries: int, control: Optional[RunControl]) -> CheckResult:
+    failures = []
+    for attempt in range(1, retries + 2):
+        result = _safe_check(net, entry, check)
+        if not result.any_error:
+            break
+        detail = "; ".join(f"{r.source}: {r.note}" for r in result.evidence if r.error)
+        if not detail:
+            detail = "; ".join(message for _, message in result.issues)
+        detail = detail.replace("HTTP None", "connection failed or timed out") or "Verification unavailable"
+        failures.append((attempt, detail))
+        logger.warning("Verification attempt %d/%d failed for %s (arXiv %s): %s",
+                       attempt, retries + 1, entry.key, result.arxiv_id or "—", detail)
+        if attempt <= retries and control is not None and not control.wait_if_paused():
+            break
+    result.attempts = attempt
+    result.attempt_errors = failures
+    return result
+
+
 def verify_entries(
     net: Net,
     entries: List[Entry],
     progress: Optional[ProgressFn] = None,
     workers: int = 1,
     control: Optional[RunControl] = None,
+    *,
+    check: Optional[Callable[[Net, Entry], CheckResult]] = None,
+    retries: int = 0,
 ) -> List[CheckResult]:
     """Verify entries, optionally with ``workers`` concurrent threads.
 
@@ -515,6 +584,7 @@ def verify_entries(
     completed so far.
     """
     entries = list(entries)
+    check = check or verify_entry
     total = len(entries)
     results: List[Optional[CheckResult]] = [None] * total
     counter = {"done": 0}
@@ -522,15 +592,7 @@ def verify_entries(
     task_iter = iter(enumerate(entries))
 
     def run_one(idx: int, entry: Entry) -> None:
-        try:
-            result = verify_entry(net, entry)
-        except Exception as exc:  # noqa: BLE001 - never let one entry kill the run
-            result = CheckResult(
-                entry=entry, verdict=WARN,
-                issues=[(WARN, f"checker error: {exc}")],
-                any_error=True,
-            )
-        results[idx] = result
+        results[idx] = _check_with_retries(net, entry, check, max(0, retries), control)
         with lock:
             counter["done"] += 1
             done = counter["done"]
@@ -573,6 +635,16 @@ def retry_failed(
         if control is not None and not control.wait_if_paused():
             break
         if res.any_error and res.verdict != OK:
-            updated[idx] = verify_entry(net, res.entry)
+            new = _check_with_retries(net, res.entry, verify_entry, 0, control)
+            updated[idx] = merge_attempts(res, new)
     net.save()
     return updated
+
+
+def merge_attempts(previous: CheckResult, latest: CheckResult) -> CheckResult:
+    """Keep the attempt history when replacing an individual result."""
+    latest.attempt_errors = previous.attempt_errors + [
+        (previous.attempts + number, detail) for number, detail in latest.attempt_errors
+    ]
+    latest.attempts += previous.attempts
+    return latest

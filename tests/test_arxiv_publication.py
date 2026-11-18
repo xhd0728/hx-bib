@@ -97,7 +97,9 @@ def test_openreview_search_uses_a_public_venue_decision_not_a_submission():
     accepted = {
         "id": "paper", "forum": "paper", "domain": "Example/2025/Conference", "pdate": 1758215815218,
         "content": {
-            "title": {"value": TITLE}, "authors": {"value": ["Jane Doe", "Alex Singh"]},
+            "title": {"value": TITLE}, "authors": {"value": [
+                {"fullname": "Jane Doe", "username": "~Jane_Doe1"}, "Alex Singh", {"username": "~Unknown1"},
+            ]},
             "venueid": {"value": "Example/2025/Conference"}, "venue": {"value": "Example 2025 poster"},
         },
     }
@@ -108,6 +110,7 @@ def test_openreview_search_uses_a_public_venue_decision_not_a_submission():
     reply = {**accepted, "id": "reply"}
     net = StubNet({"notes": [submission, reply, accepted]})
     record = openreview_publication(net, REFERENCE)
+    assert record.raw_authors == ["Jane Doe", "Alex Singh"]
     assert record.url == "https://openreview.net/forum?id=paper"
     assert _arxiv_publication(REFERENCE, record) == ("accepted", "OpenReview · Example 2025 poster")
     assert not openreview_publication(StubNet({"notes": [submission, reply]}), REFERENCE).found
@@ -142,3 +145,25 @@ def test_arxiv_id_search_survives_abbreviated_bib_title_and_provider_error(monke
     result = checker.verify_entry(StubNet({}), entry)
     assert result.publication == ("record", "Crossref · Example Journal")
     assert result.publication_url == record.url
+
+
+def test_arxiv_check_retries_only_incomplete_publication_evidence(monkeypatch):
+    entry = parse_bibtex("@misc{paper, eprint={2502.14739}}").entries[0]
+    missing = SourceRecord("arXiv", False, note="abs page 404")
+    monkeypatch.setattr(checker, "arxiv_lookup", lambda *_: missing)
+    result = checker.verify_arxiv_entry(StubNet({}), entry)
+    assert result.publication == ("missing", "") and not result.any_error
+
+    monkeypatch.setattr(checker, "arxiv_lookup", lambda *_: REFERENCE)
+    timeout = SourceRecord("OpenReview", False, error=True, note="HTTP None")
+    monkeypatch.setattr(checker, "openreview_publication", lambda *_: timeout)
+    monkeypatch.setattr(checker, "crossref_publication", lambda *_: SourceRecord("Crossref", False))
+    monkeypatch.setattr(checker, "dblp_publication", lambda *_: SourceRecord("DBLP", False))
+    result = checker.verify_arxiv_entry(StubNet({}), entry)
+    assert result.publication == ("unavailable", "OpenReview") and result.any_error
+
+    record = SourceRecord("DBLP", True, title=TITLE, authors=["doe"], venue="Example Conference",
+                          publication_type="Conference and Workshop Papers")
+    monkeypatch.setattr(checker, "dblp_publication", lambda *_: record)
+    result = checker.verify_arxiv_entry(StubNet({}), entry)
+    assert result.publication[0] == "record" and not result.any_error

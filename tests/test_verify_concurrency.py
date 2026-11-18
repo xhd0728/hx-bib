@@ -2,10 +2,13 @@
 
 import threading
 import time
+from collections import Counter
 
 from hx_bib.core.parser import parse_bibtex
 from hx_bib.verify import checker
-from hx_bib.verify.checker import CheckResult, RunControl, OK
+from hx_bib.verify.checker import OK, CheckResult, RunControl
+from hx_bib.verify.report import build_html, build_json
+from hx_bib.verify.sources import SourceRecord
 
 
 class _FakeNet:
@@ -113,3 +116,27 @@ def test_run_control_wait_semantics():
     control.pause()
     threading.Timer(0.1, control.cancel).start()
     assert control.wait_if_paused() is False   # cancelled while paused
+
+
+def test_retries_are_isolated_and_report_recovered_and_exhausted_attempts():
+    calls = Counter()
+
+    def check(_net, entry):
+        calls[entry.key] += 1
+        if entry.key == "k1" and calls[entry.key] < 3:
+            raise TimeoutError("server timed out")
+        if entry.key == "k2":
+            return CheckResult(entry, "INFO", any_error=True,
+                               evidence=[SourceRecord("OpenReview", False, error=True, note="HTTP None")])
+        return CheckResult(entry, OK)
+
+    results = checker.verify_entries(_FakeNet(), _entries(3), workers=2, check=check, retries=2)
+    assert calls == {"k0": 1, "k1": 3, "k2": 3}
+    normal, recovered, failed = results
+    assert normal.attempt_errors == [] and recovered.attempts == 3 and not recovered.any_error
+    assert recovered.attempt_errors == [(1, "TimeoutError: server timed out"), (2, "TimeoutError: server timed out")]
+    assert failed.any_error and failed.attempt_errors[-1] == (3, "OpenReview: connection failed or timed out")
+    resumed = checker.merge_attempts(failed, CheckResult(failed.entry, OK))
+    assert resumed.attempts == 4 and not resumed.any_error and len(resumed.attempt_errors) == 3
+    assert '"attempts": 4' in build_json([resumed], "sample.bib")
+    assert "Attempt 3: OpenReview: connection failed or timed out" in build_html([resumed], "sample.bib")
