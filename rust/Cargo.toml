@@ -1,5 +1,5 @@
 [package]
-name = "hx-bib-rs"
+name = "hx-bib-desktop"
 version = "0.1.0"
 edition = "2021"
 description = "Native Rust BibTeX and LaTeX research workbench"
