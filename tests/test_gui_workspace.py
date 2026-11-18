@@ -160,6 +160,37 @@ def test_newer_preview_job_wins_even_if_old_job_finishes_last(monkeypatch):
     assert state["previews"]["format"]["result_text"] == "new result"
 
 
+def test_preview_with_old_options_is_discarded_before_debounced_refresh(monkeypatch):
+    state = loaded_state()
+    started, release = threading.Event(), threading.Event()
+    rendered = []
+
+    class Widget:
+        is_deleted = False
+
+        def props(self, *args, **kwargs):
+            pass
+
+    def compute(before):
+        started.set()
+        assert release.wait(5)
+        return before + " updated"
+
+    monkeypatch.setattr(app, "_render_preview", lambda *args, **kwargs: rendered.append(args))
+
+    async def scenario():
+        task = asyncio.create_task(app._run_preview_job(
+            Widget(), Widget(), state, "en", "format", compute, None, None, "format",
+        ))
+        assert await asyncio.to_thread(started.wait, 5)
+        app._set_setting(state, "format", "indent", "2")
+        release.set()
+        await task
+
+    asyncio.run(scenario())
+    assert not rendered and not state["previews"]
+
+
 @pytest.mark.parametrize("copied", [True, False])
 def test_copy_notification_reflects_browser_result(monkeypatch, copied):
     notifications = []

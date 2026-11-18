@@ -298,9 +298,14 @@ html, body { height:100%; overflow:hidden; }
 .hx-workbench-rail > *, .hx-workbench-output > * { flex:none; }
 .hx-workbench-output { padding-right:2px; overflow-anchor:none; }
 .hx-workbench-output > .nicegui-refreshable { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.hx-workbench-actions > .q-btn { width:100%; min-height:36px; }
-.hx-workbench-actions .q-btn__content { justify-content:flex-start; }
-.hx-action-active { background:#eef2ff !important; }
+.hx-workbench-actions > .q-btn { width:100%; min-width:0; min-height:32px; padding:4px 9px;
+                               border-radius:8px; color:var(--hx-ink); }
+.hx-workbench-actions .q-btn__content { justify-content:flex-start; flex-wrap:nowrap; text-align:left; }
+.hx-workbench-actions .q-icon { flex:none; font-size:18px; color:var(--hx-muted); }
+.hx-workbench-actions .hx-action-active { background:#eef2ff; color:var(--hx-brand-ink);
+                                         box-shadow:inset 3px 0 0 var(--hx-brand); }
+.hx-workbench-actions .hx-action-active .q-icon { color:inherit; }
+.hx-workbench-nav + .hx-workbench-nav { border-top:1px solid var(--hx-line); padding-top:8px; }
 .hx-workbench-disclosure { border:1px solid var(--hx-line); border-radius:10px; overflow:hidden; }
 .hx-workbench-disclosure .q-item { min-height:38px; padding:8px 10px; }
 .hx-workbench-disclosure > .q-expansion-item__container > .q-expansion-item__content {
@@ -333,11 +338,18 @@ html, body { height:100%; overflow:hidden; }
 @media (min-width:901px) {
   .hx-workbench { height:100%; min-height:0; overflow:hidden; }
 }
+@media (min-width:901px) and (min-height:560px) {
+  .hx-bib-rail { overflow:hidden; scrollbar-gutter:auto; }
+  .hx-bib-tool-list { overflow:hidden; scrollbar-gutter:stable; }
+  .hx-bib-rail > .hx-bib-options-scroll { flex:1 1 auto; min-height:0; overflow:auto;
+                                        scrollbar-gutter:stable; }
+}
 @media (max-width:900px) {
   .hx-workbench-grid { grid-template-columns:minmax(0,1fr); }
   .hx-workbench-rail, .hx-workbench-output { overflow:visible; padding-right:0; }
   .hx-workbench-rail { border-right:none; border-bottom:1px solid var(--hx-line); padding-bottom:12px; }
   .hx-workbench-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .hx-workbench-actions > .q-btn { min-height:36px; }
 }
 @media (max-width:560px) {
   .hx-code-pair { grid-template-columns:minmax(0,1fr); }

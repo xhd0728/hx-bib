@@ -33,7 +33,6 @@ async def settle(seconds: float = 0.25) -> None:
 
 
 async def choose_tool(user, key):
-    user.find(marker="more-tools").click()
     await user.should_see(marker=f"action-{key}")
     user.find(marker=f"action-{key}").click()
 
@@ -67,7 +66,8 @@ async def main() -> None:
         await settle()
         await user.should_see("custom.bib")
         await user.should_see("工作副本")
-        await user.should_see(marker="action-format")
+        for key in ("format", "check", "verify", "clean", "normalize", "venues", "arxiv"):
+            await user.should_see(marker=f"action-{key}")
         print("✓ file loaded from path (status bar shows working copy)")
 
         user.find(marker="action-format").click()
@@ -94,13 +94,12 @@ async def main() -> None:
 
         open_section(user, "bib-advanced")
         user.find("等号对齐").click()
-        await settle()
         await user.should_see("选项已变化")
         assert not next(iter(user.find(marker="apply-btn").elements)).enabled
-        user.find(marker="action-format").click()
-        await settle()
+        await user.should_see("预览已更新", retries=20)
         assert next(iter(user.find(marker="apply-btn").elements)).enabled
-        print("✓ changed options invalidate Apply until the preview is regenerated")
+        await user.should_see(marker="bib-item-copy-before")
+        print("✓ formatting options update the preview and keep the open entry comparison")
 
         user.find(marker="apply-btn").click()
         await settle()
@@ -117,24 +116,21 @@ async def main() -> None:
         print("✓ redo works")
 
         await choose_tool(user, "clean")
-        await settle()
-        user.find("自定义删除（逗号分隔）").type("abstract")
+        await user.should_see("清理 · 修改预览", retries=20)
+        assert not next(iter(user.find(marker="apply-btn").elements)).enabled
+        user.find("自定义删除（逗号分隔）").type("address")
         user.find(marker="nav-table").click()
         await settle()
         user.find(marker="nav-tools").click()
         await settle()
-        assert next(iter(user.find("自定义删除（逗号分隔）").elements)).value == "abstract"
-        user.find(marker="clean-preview").click()
-        await settle()
-        await user.should_see("逐项对照")
-        print("✓ clean tab works")
+        assert next(iter(user.find("自定义删除（逗号分隔）").elements)).value == "address"
+        await user.should_see("清理 · 修改预览", retries=20)
+        assert next(iter(user.find(marker="apply-btn").elements)).enabled
+        print("✓ clean options update the preview without a second click")
 
         await choose_tool(user, "normalize")
-        await settle()
-        user.find(marker="normalize-preview").click()
-        await settle()
-        await user.should_see("逐项对照")
-        print("✓ normalize tab works")
+        await user.should_see("归一化 · 修改预览", retries=20)
+        print("✓ normalization opens directly with its preview")
 
         user.find(marker="action-check").click()
         await user.should_see(marker="check-download", retries=20)
@@ -147,16 +143,14 @@ async def main() -> None:
         await settle()
         open_section(user, "bib-advanced")
         user.find(marker="check-option-check_venues").click()
-        await settle()
         await user.should_see("检查项已变化")
         assert not next(iter(user.find(marker="check-download").elements)).enabled
-        user.find(marker="action-check").click()
-        await settle()
+        await user.should_see("已检查", retries=20)
         assert next(iter(user.find(marker="check-download").elements)).enabled
-        open_section(user, "check-details")
+        assert next(iter(user.find(marker="check-details").elements)).value
         user.find(marker="check-goto-clean").click()
         await settle()
-        await user.should_see(marker="clean-preview")
+        await user.should_see("自定义删除")
         user.find(marker="action-check").click()
         await settle()
         open_section(user, "check-details")
@@ -192,14 +186,13 @@ async def main() -> None:
         open_section(user, "bib-advanced")
         style = next(iter(user.find(marker="venue-norm-style").elements))
         style.set_value("full")
-        user.find(marker="venue-normalize-preview").click()
         await user.should_see(marker="apply-btn", retries=20)
         apply = next(iter(user.find(marker="apply-btn").elements))
         assert apply.enabled
         style.set_value("family")
         assert not apply.enabled
-        style.set_value("full")
-        assert apply.enabled
+        await user.should_see("预览已更新", retries=20)
+        assert next(iter(user.find(marker="apply-btn").elements)).enabled
         user.find(marker="apply-btn").click()
         await user.should_see("会刊写法规范化")
         user.find(marker="undo-btn").click()
@@ -420,7 +413,7 @@ async def main() -> None:
                 "@article{journal, title={A journal article}}"
             )
             user.find(marker="paste-load").click()
-            await user.should_see(marker="more-tools")
+            await user.should_see(marker="action-arxiv")
             started.clear()
             await choose_tool(user, "arxiv")
             assert await asyncio.to_thread(started.wait, 5)

@@ -116,6 +116,8 @@ VERDICT_COLOR = {
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
 _TABLE_UPLOAD_LIMIT = 2_000_000
+_LIVE_BIB_TOOLS = {"format", "clean", "normalize", "check", "venues"}
+_LIVE_PREVIEW_DELAY = 0.18
 _CODE_PREVIEW_LINES = 500
 
 # Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
@@ -217,10 +219,17 @@ def _head_html(description: str) -> str:
 # ---------------------------------------------------------------------------
 def _set_setting(state: dict, path: str, key: str, value) -> None:
     node = state["settings"].setdefault(path, {})
-    if isinstance(node, dict):
-        node[key] = value
+    if not isinstance(node, dict) or node.get(key) == value:
+        return
+    node[key] = value
     state["settings_dirty"] = True
+    _preview_settings_changed(state, path)
+
+
+def _preview_settings_changed(state: dict, path: str) -> None:
     _update_preview_controls(state)
+    if refresh := state.get("schedule_preview"):
+        refresh(path)
 
 
 def _bind(widget, state: dict, path: str, key: str, after=None):
@@ -787,7 +796,8 @@ async def _run_preview_job(button, container, state: dict, lang: str,
         if current_job:
             state["preview_jobs"].pop(key)
             _busy(button, False)
-    if not current_job or not preview_is_current(state, revision, before):
+    if (not current_job or not preview_is_current(state, revision, before)
+            or config != _preview_config(state, key)):
         return
     state["previews"][key] = {
         "before": before, "result_text": result, "opts": opts, "label": label,
@@ -807,7 +817,7 @@ def _draft(widget, state: dict, key: str, default=""):
     def changed(e) -> None:
         state["drafts"][key] = e.value
         if key.startswith("clean_"):
-            _update_preview_controls(state)
+            _preview_settings_changed(state, "clean")
 
     widget.on_value_change(changed)
     return widget
@@ -1531,28 +1541,61 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
     }
     actions = {}
     quick = {}
+    pending = None
 
-    def has_result(key: str) -> bool:
+    def cancel_pending() -> None:
+        nonlocal pending
+        if pending is not None:
+            pending.cancel()
+            pending = None
+
+    def schedule_preview(key: str) -> None:
+        nonlocal pending
+        if key not in _LIVE_BIB_TOOLS or key != state["tab"] or workbench.is_deleted:
+            return
+        cancel_pending()
+        revision = state["revision"]
+
+        async def refresh() -> None:
+            nonlocal pending
+            pending = None
+            if state["revision"] == revision and actions.get("key") == key:
+                if command := actions.get("run"):
+                    await command()
+
+        with workbench:
+            pending = ui.timer(_LIVE_PREVIEW_DELAY, refresh, once=True)
+
+    def has_result(key: str, scope: str = "all") -> bool:
         if key == "check":
-            return state["check_report"] is not None or state["check_job"] is not None
+            return (
+                state["check_report"] is not None and state["check_config"] == _preview_config(state, key)
+            )
         if key == "verify":
-            return state["verify_results"] is not None or state["run_control"] is not None
-        return key in state["previews"] or key in state["preview_jobs"]
+            return state["progress"].get("scope") == scope and (
+                state["verify_results"] is not None or state["run_control"] is not None
+            )
+        preview = state["previews"].get(key)
+        return preview is not None and preview["config"] == _preview_config(state, key)
 
     def update_actions() -> None:
+        viewed = state["tab"]
+        if viewed == "verify" and state["progress"].get("scope") == "arxiv":
+            viewed = "arxiv"
         for key, button in quick.items():
-            active = state["tab"] == key
+            active = viewed == key
             button.props(add="aria-pressed=true" if active else "aria-pressed=false")
             button.classes(add="hx-action-active" if active else "",
                            remove="" if active else "hx-action-active")
             _busy(button, active and (
-                key in state["preview_jobs"] if key == "format" else
+                key in state["preview_jobs"] if key in _LIVE_BIB_TOOLS - {"check"} else
                 state["check_job"] is not None if key == "check" else
                 state["run_control"] is not None
             ))
 
     async def select(key: str, configure: bool = False):
         if key != state["tab"]:
+            cancel_pending()
             state["tab"] = key
             await result.refresh()
             update_actions()
@@ -1565,41 +1608,49 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
     def run_action(key: str):
         async def run() -> None:
             use_cached = key != state["tab"] and has_result(key)
-            command = await select(key)
-            if command is not None and not use_cached:
+            command = await select(key, configure=key in {"clean", "normalize"})
+            if key != "venues" and command is not None and not use_cached:
+                cancel_pending()
                 await command()
 
         return run
 
     async def run_arxiv() -> None:
+        use_cached = state["tab"] != "verify" and has_result("verify", "arxiv")
         command = await select("verify")
-        if command is not None:
+        if command is not None and not use_cached:
             await command(scope="arxiv")
 
-    with ui.card().classes("hx-card hx-workbench hx-bib-workbench w-full"):
+    with ui.card().classes("hx-card hx-workbench hx-bib-workbench w-full") as workbench:
         _render_status_bar(state, lang, doc, refresh_body)
         with ui.element("div").classes("hx-workbench-grid w-full"):
-            with ui.element("aside").classes("hx-workbench-rail").props('data-hx-scroll="bib-actions"'):
-                ui.label(t(lang, "workbench_actions")).classes("hx-optlabel")
-                with ui.column().classes("hx-workbench-actions w-full gap-2"):
-                    for key, label, icon in (
-                        ("format", "workbench_organize", "auto_fix_high"),
-                        ("check", "tab_check", "rule"),
-                        ("verify", "workbench_verify", "travel_explore"),
+            with ui.element("aside").classes("hx-workbench-rail hx-bib-rail").props(
+                'data-hx-scroll="bib-actions"'
+            ):
+                with ui.column().classes("hx-bib-tool-list w-full gap-2"):
+                    for heading, items in (
+                        ("workbench_actions", (
+                            ("format", "workbench_organize", "auto_fix_high"),
+                            ("check", "tab_check", "rule"),
+                            ("verify", "workbench_verify", "travel_explore"),
+                        )),
+                        ("workbench_more", (
+                            ("clean", "tab_clean", "cleaning_services"),
+                            ("normalize", "tab_normalize", "tune"),
+                            ("venues", "tab_venues", "stadium"),
+                            ("arxiv", "arxiv_publication_action", "school"),
+                        )),
                     ):
-                        quick[key] = ui.button(t(lang, label), icon=icon, on_click=run_action(key)).props(
-                            "outline color=primary no-caps"
-                        ).mark(f"action-{key}")
-                    with ui.button(t(lang, "workbench_more"), icon="expand_more").props("flat no-caps").mark(
-                        "more-tools"
-                    ):
-                        with ui.menu():
-                            for key in ("clean", "normalize", "venues"):
-                                ui.menu_item(t(lang, "tab_" + key), on_click=lambda k=key: select(
-                                    k, configure=k in {"clean", "normalize"} and not has_result(k),
-                                )).mark(f"action-{key}")
-                            ui.menu_item(t(lang, "arxiv_publication_action"), on_click=run_arxiv).mark("action-arxiv")
-                settings_host = ui.column().classes("w-full gap-2")
+                        with ui.column().classes("hx-workbench-nav w-full gap-1"):
+                            ui.label(t(lang, heading)).classes("hx-optlabel")
+                            with ui.column().classes("hx-workbench-actions w-full gap-1"):
+                                for key, label, icon in items:
+                                    handler = run_arxiv if key == "arxiv" else run_action(key)
+                                    quick[key] = ui.button(t(lang, label), icon=icon, on_click=handler).props(
+                                        "flat dense no-caps"
+                                    ).mark(f"action-{key}")
+                with ui.element("div").classes("hx-bib-options-scroll").props('data-hx-scroll="bib-options"'):
+                    settings_host = ui.column().classes("w-full gap-2")
 
             with ui.element("section").classes("hx-workbench-output w-full").props(
                 'data-hx-scroll="bib-results"'
@@ -1611,10 +1662,12 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
                     actions.clear()
                     actions["key"] = key
                     actions["settings_host"] = settings_host
+                    actions["update_actions"] = update_actions
                     builders[key](state, lang, doc, refresh_body, quick.get(key), actions, select)
 
                 result()
         update_actions()
+        state["schedule_preview"] = schedule_preview
 
 
 @contextmanager
@@ -1701,30 +1754,38 @@ def _entry_comparisons(before: str, after: str) -> list:
 
 
 def _review_parts(lang: str, key: str, get_parts: Callable,
-                  allow_after: Optional[Callable] = None) -> Callable:
+                  allow_after: Optional[Callable] = None, *,
+                  preferences: Optional[dict] = None, preference_key: str = "") -> Callable:
     after_button = None
+    expanded_key = preference_key + ":expanded"
+    item_key = preference_key + ":item"
 
     def update_after() -> None:
         if after_button is not None and not after_button.is_deleted and allow_after is not None:
             after_button.set_enabled(allow_after())
 
-    with ui.expansion(t(lang, "workbench_details"), icon="difference").classes(
+    with ui.expansion(t(lang, "workbench_details"), icon="difference",
+                      value=bool(preferences and preferences.get(expanded_key))).classes(
         "hx-workbench-disclosure w-full"
     ).mark(f"{key}-details") as details:
         slot = ui.column().classes("w-full gap-2")
 
-    def load(e) -> None:
-        if not e.value or slot.default_slot.children:
+    def load() -> None:
+        if preferences is not None:
+            preferences[expanded_key] = details.value
+        if not details.value or slot.default_slot.children:
             return
         entries = get_parts()
         with slot:
             if not entries:
                 ui.label(t(lang, "no_results")).classes("hx-tab-note")
                 return
-            picker = ui.select(
-                {index: name for index, (name, _, _) in enumerate(entries)},
-                value=0, label=t(lang, "workbench_pick_item"),
-            ).props("use-input hide-selected fill-input").classes("w-full").mark(f"{key}-pick-item")
+            labels = {index: name for index, (name, _, _) in enumerate(entries)}
+            selected = preferences.get(item_key) if preferences is not None else None
+            initial = next((index for index, name in labels.items() if name == selected), 0)
+            picker = ui.select(labels, value=initial, label=t(lang, "workbench_pick_item")).props(
+                "use-input hide-selected fill-input"
+            ).classes("w-full").mark(f"{key}-pick-item")
             pair_slot = ui.column().classes("w-full gap-2")
 
             def display() -> None:
@@ -1733,6 +1794,8 @@ def _review_parts(lang: str, key: str, get_parts: Callable,
                 after_button = None
                 if picker.value is None:
                     return
+                if preferences is not None:
+                    preferences[item_key] = labels[picker.value]
                 _, before, after = entries[picker.value]
                 with pair_slot:
                     button = _code_pair(before, after, lang, f"{key}-item", allow_after=allow_after)
@@ -1743,7 +1806,8 @@ def _review_parts(lang: str, key: str, get_parts: Callable,
             picker.on_value_change(lambda _: display())
             display()
 
-    details.on_value_change(load)
+    details.on_value_change(lambda _: load())
+    load()
     return update_after
 
 
@@ -1794,7 +1858,10 @@ def _render_preview(container: ui.column, state: dict, lang: str,
             ).mark("apply-btn")
         status = ui.label("").classes("hx-tab-note").props("role=status")
         after_button = _code_pair(before, result_text, lang, "bib", allow_after=fresh)
-        update_part = _review_parts(lang, "bib", lambda: _entry_comparisons(before, result_text), allow_after=fresh)
+        update_part = _review_parts(
+            lang, "bib", lambda: _entry_comparisons(before, result_text), allow_after=fresh,
+            preferences=state["drafts"], preference_key="preview:" + key,
+        )
         with ui.expansion(t(lang, "view_list"), icon="list").classes("hx-workbench-disclosure w-full"):
             ui.html(changes_html(before, result_text, "changed", lang)).classes("w-full")
 
@@ -1893,6 +1960,8 @@ def _panel_clean(state: dict, lang: str, _doc, refresh_body, primary, actions, _
             for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
                                 ("add_value", add_value), ("overwrite", overwrite)):
                 _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
+        incomplete = ui.label(t(lang, "incomplete_field")).classes("hx-tab-note text-amber-800")
+        incomplete.set_visibility(False)
         with ui.row().classes("gap-6 flex-wrap mt-1"):
             drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
                                          value=bool(_opt(state, "clean", "drop_empty"))),
@@ -1938,33 +2007,35 @@ def _panel_clean(state: dict, lang: str, _doc, refresh_body, primary, actions, _
 
     def compute(before: str, values: dict) -> str:
         work = parse_bibtex(before)
+        notes = []
         names = list(values["remove_select"] or [])
         if values["custom_remove"]:
             names += [n.strip() for n in re.split(r"[,\s]+", values["custom_remove"]) if n.strip()]
         if names:
-            cleaner.remove_fields(work, names)
+            notes.extend(cleaner.remove_fields(work, names))
         if values["add_key"] and values["add_value"]:
-            cleaner.add_fields(work, {values["add_key"].strip(): values["add_value"]},
-                               overwrite=bool(values["overwrite"]))
+            notes.extend(cleaner.add_fields(
+                work, {values["add_key"].strip(): values["add_value"]}, overwrite=bool(values["overwrite"]),
+            ))
         if values["drop_empty"]:
-            cleaner.drop_empty_fields(work)
+            notes.extend(cleaner.drop_empty_fields(work))
         if values["drop_others"]:
-            cleaner.drop_others(work)
+            notes.extend(cleaner.drop_others(work))
         if values["months"]:
-            cleaner.normalize_months(work)
+            notes.extend(cleaner.normalize_months(work))
         if values["title_period"]:
-            cleaner.strip_title_periods(work)
+            notes.extend(cleaner.strip_title_periods(work))
         if values["doi"]:
-            cleaner.normalize_dois(work)
+            notes.extend(cleaner.normalize_dois(work))
         if values["pages"]:
-            cleaner.unify_page_ranges(work)
+            notes.extend(cleaner.unify_page_ranges(work))
         if values["clean_urls"]:
-            cleaner.strip_url_tracking(work)
+            notes.extend(cleaner.strip_url_tracking(work))
         if values["dedupe"]:
-            cleaner.dedupe_entries(work, keep="last" if values["keep_last"] else "first")
+            notes.extend(cleaner.dedupe_entries(work, keep="last" if values["keep_last"] else "first"))
         if values["dedupe_title"]:
-            cleaner.dedupe_by_title(work, keep="last" if values["keep_last"] else "first")
-        return render_document(work, FormatOptions())
+            notes.extend(cleaner.dedupe_by_title(work, keep="last" if values["keep_last"] else "first"))
+        return render_document(work, FormatOptions()) if notes else before
 
     async def run_clean() -> None:
         values = {key: widget.value for key, widget in {
@@ -1975,8 +2046,9 @@ def _panel_clean(state: dict, lang: str, _doc, refresh_body, primary, actions, _
             "clean_urls": clean_urls, "dedupe": dedupe, "keep_last": keep_last,
             "dedupe_title": dedupe_title,
         }.items()}
-        if bool((values["add_key"] or "").strip()) != bool(values["add_value"]):
-            ui.notify(t(lang, "incomplete_field"), type="warning")
+        missing_pair = bool((values["add_key"] or "").strip()) != bool(values["add_value"])
+        incomplete.set_visibility(missing_pair)
+        if missing_pair:
             return
         await _run_preview_job(
             run_button, preview, state, lang, "clean",
@@ -1995,15 +2067,12 @@ def _panel_normalize(state: dict, lang: str, _doc, refresh_body, primary, action
 
         with ui.element("div").classes("hx-optbar w-full items-start"):
             with ui.column().classes("gap-1"):
-                ui.label(t(lang, "venue_style")).classes("hx-optlabel")
-                venue_style = _bind(ui.toggle(
+                venue_style = _bind(ui.select(
                     {"abbr": t(lang, "style_abbr_short"),
                      "full": t(lang, "style_full_short"),
                      "family": t(lang, "style_family_short"),
                      "keep": t(lang, "style_keep_short")},
-                    value=_opt(state, "normalize", "venue_style") or "abbr",
-                ).props(
-                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                    value=_opt(state, "normalize", "venue_style") or "abbr", label=t(lang, "venue_style"),
                 ).mark("normalize-venue-style"),
                     state, "normalize", "venue_style")
                 example = ui.label("").classes("hx-style-ex")
@@ -2023,14 +2092,11 @@ def _panel_normalize(state: dict, lang: str, _doc, refresh_body, primary, action
                 venue_style.on_value_change(lambda _: update_example())
 
             with ui.column().classes("gap-1"):
-                ui.label(t(lang, "arxiv_style")).classes("hx-optlabel")
-                arxiv_style = _bind(ui.toggle(
+                arxiv_style = _bind(ui.select(
                     {"journal": t(lang, "arxiv_journal_short"),
                      "misc": t(lang, "arxiv_misc_short"),
                      "keep": t(lang, "style_keep_short")},
-                    value=_opt(state, "normalize", "arxiv_style") or "journal",
-                ).props(
-                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                    value=_opt(state, "normalize", "arxiv_style") or "journal", label=t(lang, "arxiv_style"),
                 ).mark("normalize-arxiv-style"),
                     state, "normalize", "arxiv_style")
             with ui.column().classes("gap-2"):
@@ -2146,9 +2212,11 @@ def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions,
                                                   on_click=download_json).props(
                     "outline no-caps"
                 ).mark("check-download")
-            with ui.expansion(t(lang, "workbench_issues"), icon="list").classes(
+            with ui.expansion(t(lang, "workbench_issues"), icon="list",
+                              value=state["drafts"].get("check_details_open", False)).classes(
                 "hx-workbench-disclosure w-full"
-            ).mark("check-details"):
+            ).mark("check-details") as details:
+                details.on_value_change(lambda e: state["drafts"].update(check_details_open=e.value))
                 labels = {"ALL": f'{t(lang, "check_all")} {len(report.issues)}'}
                 labels.update({severity: f'{t(lang, "sev_" + severity)} {report.count(severity)}'
                                for severity in ("error", "warning", "info")})
@@ -2185,8 +2253,6 @@ def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions,
     update_status()
 
     async def run_check() -> None:
-        if state["check_job"] is not None:
-            return
         before, revision = state["text"], state["revision"]
         config = _preview_config(state, "check")
         options = ValidateOptions(**config)
@@ -2196,8 +2262,9 @@ def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions,
         update_status()
         try:
             report = await asyncio.to_thread(lambda: validate_document(parse_bibtex(before), options))
-            if preview_is_current(state, revision, before) and state["check_job"] is token:
-                state.update(check_report=report, check_config=config, check_filter="ALL", check_job=None)
+            if (preview_is_current(state, revision, before) and state["check_job"] is token
+                    and config == _preview_config(state, "check")):
+                state.update(check_report=report, check_config=config, check_job=None)
                 if not result_area.is_deleted:
                     render_report(report)
                 elif state["mode"] == "tools" and state["tab"] == "check":
@@ -2210,7 +2277,6 @@ def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions,
                 state["check_job"] = None
                 if status.is_deleted and state["mode"] == "tools" and state["tab"] == "check":
                     refresh_body.refresh()
-            _busy(run_button, False)
             update_status()
 
     actions["run"] = run_check
@@ -2218,10 +2284,7 @@ def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions,
 # -- verify -----------------------------------------------------------------
 def _panel_verify(state: dict, lang: str, doc, _refresh_body, run_button, actions, _navigate) -> None:
     with _workbench_settings(actions, lang, t(lang, "verify_note")):
-        scope_setting = _draft(ui.select(
-            {"all": t(lang, "verify_scope_all"), "arxiv": t(lang, "arxiv_publication_action")},
-            label=t(lang, "verify_scope"),
-        ).mark("verify-scope"), state, "verify_scope", "all")
+        ui.label(t(lang, "workbench_online_hint")).classes("hx-tab-note")
         ui.label(t(lang, "verify_scope_hint").format(n=len(doc.entries))).classes("hx-tab-note")
         only = _draft(ui.input(t(lang, "only_keys")).props("outlined dense").mark("verify-keys"),
                       state, "verify_keys")
@@ -2310,14 +2373,14 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body, run_button, action
         if snapshot == last_status:
             return
         last_status = snapshot
-        _busy(run_button, running)
+        actions["update_actions"]()
         pause_button.set_enabled(running and not stopping)
         pause_button.set_text(t(lang, "resume" if paused else "pause"))
         pause_button.set_icon("play_arrow" if paused else "pause")
         stop_button.set_enabled(running and not stopping)
         details_expansion.set_enabled(bool(results))
         download_button.set_enabled(bool(results))
-        for widget in (only, delay, workers, use_cache, scope_setting):
+        for widget in (only, delay, workers, use_cache):
             widget.set_enabled(not running)
         progress_bar.set_value(done / total if total else 0)
         if running:
@@ -2369,12 +2432,11 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body, run_button, action
                 f'{title}<div class="hx-tab-note">{_esc(t(lang, message))}</div></div>'
             )
 
-    async def run_verify(scope=None) -> None:
+    async def run_verify(scope: str = "all") -> None:
         if state["run_control"] is not None:
             return
         before, revision = state["text"], state["revision"]
         keys = set() if scope == "arxiv" else set((only.value or "").replace(",", " ").split())
-        scope = scope or scope_setting.value
         entries = list(doc.entries)
         if keys:
             missing = keys - {entry.key for entry in entries}
@@ -2392,9 +2454,8 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body, run_button, action
         wait = max(0.0, float(delay.value if delay.value is not None else 0.8))
         use_cached = bool(use_cache.value)
         control = RunControl()
-        progress = {"done": 0, "total": len(entries), "key": "", "running": True, "paused": False}
+        progress = {"done": 0, "total": len(entries), "key": "", "running": True, "paused": False, "scope": scope}
         state.update(run_control=control, progress=progress, verify_results=None, verify_filter="ALL")
-        progress["scope"] = scope
         sync_view()
 
         progress_lock = Lock()
@@ -2538,6 +2599,7 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body, _primary=None, acti
                 )
 
         run_button.on_click(run_venue_normalize)
+        actions["run"] = run_venue_normalize
 
     query = _draft(ui.input(t(lang, "search_venues"), placeholder=t(lang, "venues_search_hint"))
                    .classes("w-full").mark("venue-search"), state, "venue_query")
