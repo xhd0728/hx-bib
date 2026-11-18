@@ -840,11 +840,13 @@ def _build_page(initial_mode: str) -> None:
             show_workspace(initial_mode)
 
 
-def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> None:
+def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True, debug: bool = False) -> None:
+    if debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
     register_pages()
     ui.run(
         host=host, port=port, show=show, title="hx-bib", favicon="📚",
-        reload=False, show_welcome_message=False,
+        reload=False, show_welcome_message=False, uvicorn_logging_level="debug" if debug else "warning",
     )
 
 

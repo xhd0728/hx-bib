@@ -641,6 +641,7 @@ def gui_cmd(
     port: int = typer.Option(8080, "--port", "-p", help="Local port to listen on."),
     host: str = typer.Option("127.0.0.1", "--host", help="Host/interface to bind."),
     show: bool = typer.Option(True, "--show/--no-show", help="Open the browser automatically."),
+    debug: bool = typer.Option(False, "--debug", help="Print detailed server and HTTP logs to the terminal."),
 ) -> None:
     """Launch the local NiceGUI app (中文 / English)."""
     try:
@@ -649,17 +650,17 @@ def gui_cmd(
         err_console.print(f"[red]GUI dependencies missing:[/] {exc}")
         err_console.print("[dim]Install them with: pip install nicegui[/]")
         raise typer.Exit(2) from exc
-    _print_gui_banner(host, port, show)
-    run_gui(host=host, port=port, show=show)
+    _print_gui_banner(host, port, show, debug)
+    run_gui(host=host, port=port, show=show, debug=debug)
 
 
-def _print_gui_banner(host: str, port: int, show: bool) -> None:
+def _print_gui_banner(host: str, port: int, show: bool, debug: bool = False) -> None:
     bind_host = host.strip("[]")
     browser_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(bind_host, bind_host)
     address = f"[{browser_host}]" if ":" in browser_host else browser_host
     url = f"http://{address}:{port}"
     if not console.is_terminal:
-        console.print(Text(f"hx-bib v{__version__} | Web workspace | {url}"))
+        console.print(Text(f"hx-bib v{__version__} | Web workspace | {url}" + (" | DEBUG" if debug else "")))
         return
     details = Table.grid(padding=(0, 2))
     details.add_column(style="dim", no_wrap=True)
@@ -669,6 +670,8 @@ def _print_gui_banner(host: str, port: int, show: bool) -> None:
     if browser_host != bind_host:
         details.add_row("Listening", Text(f"{host} (all interfaces)"))
     details.add_row("Browser", "Opens automatically" if show else "Open the address above")
+    if debug:
+        details.add_row("Logging", "DEBUG (terminal)")
     details.add_row("Stop", Text("Ctrl+C", style="bold"))
     console.print(Panel(
         details, title=f"[bold]hx-bib[/] [dim]v{__version__}[/]", title_align="left",

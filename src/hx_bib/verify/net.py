@@ -9,6 +9,7 @@ directory so it is shared across projects.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -34,6 +35,7 @@ HOST_MIN_INTERVAL = {
 }
 
 _CACHE_TTL = {200: 86_400, 404: 3_600, 410: 3_600}
+logger = logging.getLogger(__name__)
 
 
 def default_cache_path() -> str:
@@ -137,6 +139,7 @@ class Net:
         if self.use_cache and (entry := self.cache.get(cache_key)):
             status, fetched_at = entry.get("status"), entry.get("fetched_at", 0)
             if status in _CACHE_TTL and 0 <= time.time() - fetched_at < _CACHE_TTL[status]:
+                logger.debug("GET %s %s (cache hit)", status, url)
                 return status, entry["body"]
 
         try:
@@ -150,12 +153,16 @@ class Net:
         result: Tuple[Optional[int], str] = (None, "")
         for attempt in range(retries):
             self._throttle(host)
+            started = time.monotonic()
+            logger.debug("GET %s (attempt %d/%d)", url, attempt + 1, retries)
             try:
                 req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=self.timeout if timeout is None else timeout) as resp:
                     result = (resp.getcode(), resp.read().decode("utf-8", "replace"))
+                logger.debug("GET %s %s (%.2fs)", result[0], url, time.monotonic() - started)
                 break
             except urllib.error.HTTPError as exc:
+                logger.debug("GET %s %s (%.2fs)", exc.code, url, time.monotonic() - started)
                 body = ""
                 try:
                     body = exc.read().decode("utf-8", "replace")
@@ -166,11 +173,13 @@ class Net:
                         self._host_penalty.get(host, 0.0) + 2.0, 10.0
                     )
                 if exc.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                    logger.debug("Retrying %s after HTTP %s in %.1fs", url, exc.code, 2.0 * (attempt + 1))
                     time.sleep(2.0 * (attempt + 1))
                     continue
                 result = (exc.code, body)
                 break
             except Exception as exc:  # URLError, timeout, SSL reset, …
+                logger.debug("GET failed for %s (%.2fs)", url, time.monotonic() - started, exc_info=True)
                 if attempt < retries - 1:
                     time.sleep(1.0 * (attempt + 1))
                     continue
