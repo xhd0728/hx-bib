@@ -26,7 +26,7 @@ Open [localhost:8080](http://127.0.0.1:8080) for the default port.
 4. **Check** runs offline. **Verify** queries external citation services and supports pause, stop, and report download.
 5. **Venue presets** lets you search, filter, and copy names. To standardize all matching citations, choose a style → **Generate preview** → **Apply**.
 
-Use the header switch for **LaTeX tables**: paste a table or `.tex` file, set spacing and indentation, then format, compare, and copy or download. Reformat after changing the input or options.
+Use the header switch for **LaTeX tables**: paste LaTeX or import a `.tex` file → set spacing and indentation → format → review the result or per-table comparison → copy or download. Reformat after changing the input or options.
 
 ## Command line
 
