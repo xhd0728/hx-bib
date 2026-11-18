@@ -61,14 +61,20 @@ from ..core.latex_table import (
     parse_table_body,
 )
 from ..core.model import Entry
-from ..core.normalize import NormalizeOptions, normalize_document
+from ..core.normalize import (
+    NormalizeOptions,
+    entry_venue_presets,
+    normalize_document,
+    normalize_entry,
+)
 from ..core.parser import parse_bibtex
 from ..core.validator import ValidateOptions, validate_document
 from ..core.venues import (
+    CONFERENCE,
+    JOURNAL,
     VENUES,
     families,
     get_venue,
-    match_venue,
     render_venue,
     search_venues,
 )
@@ -220,8 +226,6 @@ def _opt(state: dict, path: str, key: str):
 
 
 def _preview_config(state: dict, key: str) -> dict:
-    if key == "venues":
-        return {"venue_style": _opt(state, "normalize", "venue_style")}
     config = deepcopy(state["settings"].get(key, {}))
     if key == "clean":
         config["drafts"] = {k: v for k, v in state["drafts"].items() if k.startswith("clean_")}
@@ -1180,7 +1184,10 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
         ui.button(t(lang, "back"), icon="arrow_back", on_click=lambda: (
             state.update(venues_only=False), body.refresh(),
         )).props("flat dense").mark("venues-back")
-    _panel_venues(state, lang, None, body)
+    with ui.element("section").classes("hx-panel-scroll hx-venue-standalone w-full").props(
+        'data-hx-scroll="panel-venues-only"'
+    ):
+        _panel_venues(state, lang, None, body)
 
 
 # ---------------------------------------------------------------------------
@@ -2354,150 +2361,195 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
 
 
 # -- venues -----------------------------------------------------------------
-def _venue_usage(doc) -> dict:
-    """Count how many entries in the loaded file use each venue preset."""
-    counts: dict = {}
-    if doc is None:
-        return counts
-    for entry in doc.entries:
-        for field in ("booktitle", "journal"):
-            hit = match_venue(entry.get(field) or "")
-            if hit:
-                counts[hit[0].abbr] = counts.get(hit[0].abbr, 0) + 1
-                break
-    return counts
+_VENUE_STYLES = ("abbr", "full", "family")
 
 
 def _venue_card(venue, lang: str, used: int = 0) -> None:
-    with ui.card().classes("hx-card hx-venue-card p-3 gap-2"):
-        with ui.row().classes("w-full items-center gap-2 no-wrap"):
-            ui.label(venue.abbr).style(
-                "font-family:ui-monospace,monospace;font-weight:800;font-size:15px"
-            )
-            if used:
-                ui.label(t(lang, "venue_in_doc").format(n=used)).classes(
-                    "hx-chip"
-                ).style("background:#ecfdf5;color:#047857")
+    with ui.card().classes("hx-card hx-venue-card w-full p-3 gap-2"):
+        with ui.row().classes("hx-venue-tags w-full items-center gap-2"):
+            ui.label(venue.abbr).classes("hx-venue-abbr")
             ui.space()
-            ui.label(venue.family).classes("hx-chip").style(
-                "background:#eef2ff;color:#4338ca"
-            )
-            ui.label(venue.kind).classes("hx-chip").style(
-                "background:#f1f5f9;color:#475569"
-            )
-        ui.label(venue.name).classes("text-xs").style("color:#475569;line-height:1.45")
-        for style, short_key, copy_key, mk in (
-            ("abbr", "style_abbr_short", "venue_copy_abbr", "abbr"),
-            ("full", "style_full_short", "venue_copy_full", "full"),
-            ("family", "style_family_short", "venue_copy_family", "family"),
-        ):
+            ui.label(venue.family).classes("hx-chip hx-venue-family")
+            ui.label(t(lang, "venue_kind_" + venue.kind)).classes("hx-chip hx-venue-kind")
+            if used:
+                ui.label(t(lang, "venue_in_doc").format(n=used)).classes("hx-chip hx-venue-used")
+        ui.label(venue.name).classes("hx-venue-name")
+        for style in _VENUE_STYLES:
             rendered = render_venue(venue, style=style)
+            copy_label = t(lang, "venue_copy_" + style)
             with ui.row().classes("hx-vrow w-full no-wrap"):
-                ui.label(t(lang, short_key)).classes("hx-vrow-label")
-                ui.label(rendered).classes("hx-vrow-val truncate")
-                ui.button(
-                    icon="content_copy",
-                    on_click=_copy_handler(rendered, lang),
-                ).props(f'flat dense size=sm round aria-label="{t(lang, copy_key)}"').tooltip(t(lang, copy_key)).mark(
-                    f"venue-{venue.abbr}-{mk}"
-                )
+                ui.label(t(lang, "style_" + style + "_short")).classes("hx-vrow-label")
+                ui.label(rendered).classes("hx-vrow-val")
+                ui.button(icon="content_copy", on_click=_copy_handler(rendered, lang)).props(
+                    f'flat dense size=sm round aria-label="{copy_label}: {venue.abbr}"'
+                ).tooltip(copy_label).mark(f"venue-{venue.abbr}-{style}")
+
+
+def _normalize_venue_preview(before: str, style: str) -> str:
+    work = parse_bibtex(before)
+    opts = NormalizeOptions(venue_style=style, arxiv_style="keep")
+    changed = False
+    for entry in work.entries:
+        if entry_venue_presets(entry) and normalize_entry(entry, opts):
+            changed = True
+    return render_document(work, FormatOptions()) if changed else before
 
 
 def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("event", t(lang, "tab_venues"), t(lang, "venues_note"))
+    usage = Counter()
+    matched = 0
+    if doc is not None:
+        for entry in doc.entries:
+            presets = entry_venue_presets(entry)
+            matched += bool(presets)
+            usage.update(presets)
 
-        usage = _venue_usage(doc)
-        offline = state.get("venues_only") or doc is None
-        if offline:
-            with ui.element("div").classes("hx-vaction w-full"):
-                with ui.row().classes("items-center gap-2 no-wrap"):
-                    ui.icon("auto_fix_high").style("font-size:18px")
-                    ui.label(t(lang, "venues_norm_offline")).classes(
-                        "text-sm"
-                    ).style("color:#3730a3")
-        else:
-            with ui.element("div").classes("hx-vaction w-full"):
-                with ui.row().classes("w-full items-center gap-2 no-wrap"):
-                    ui.icon("auto_fix_high").style("font-size:18px")
-                    ui.label(t(lang, "venues_norm_title")).style(
-                        "font-weight:700;color:#312e81;font-size:14px"
-                    )
-                    ui.space()
+    def reveal_results() -> None:
+        if not _IN_SIM:
+            ui.run_javascript("""
+                document.querySelector('.hx-venue-results').scrollIntoView({
+                    block: 'start', behavior: 'instant',
+                });
+            """)
 
-                    def goto_normalize() -> None:
-                        state["tab"] = "normalize"
-                        refresh_body.refresh()
+    with ui.element("div").classes("hx-operation-grid w-full"):
+        with ui.card().classes("hx-card hx-options w-full p-5 gap-3").props(
+            'data-hx-scroll="options-venues"'
+        ):
+            _panel_head("stadium", t(lang, "tab_venues"), t(lang, "venues_note"))
+            ui.html(_steps_html(lang, ["steps_venue_search", "steps_venue_copy"]) if doc is None else
+                    _steps_html(lang, ["steps_venue_search", "steps_preview", "steps_apply"]))
+            ui.label(t(lang, "venues_find")).classes("hx-optlabel")
+            query = _draft(ui.input(t(lang, "search_venues"), placeholder=t(lang, "venues_search_hint"))
+                           .props("outlined dense").mark("venue-search"), state, "venue_query")
+            with ui.element("div").classes("hx-venue-filters w-full"):
+                kind = _draft(ui.select(
+                    {"ALL": t(lang, "venue_all_kinds"),
+                     **{key: t(lang, "venue_kind_" + key) for key in (CONFERENCE, JOURNAL)}},
+                    label=t(lang, "venue_kind"),
+                ).props("outlined dense options-dense").mark("venue-kind"), state, "venue_kind", "ALL")
+                family = _draft(ui.select(
+                    {"ALL": t(lang, "venue_all_families"), **{name: name for name in families()}},
+                    label=t(lang, "family"),
+                ).props("outlined dense options-dense").mark("venue-family"), state, "venue_family", "ALL")
 
-                    ui.button(t(lang, "goto_normalize"), icon="tune",
-                              on_click=goto_normalize).props(
-                        "flat dense no-caps"
-                    ).classes("hx-lang")
-                ui.label(t(lang, "venues_norm_note")).classes("text-xs").style(
-                    "color:#4c4f8a"
-                )
-                with ui.row().classes("w-full items-center gap-3 flex-wrap"):
-                    ui.label(t(lang, "venue_style")).classes("hx-optlabel")
-                    venue_style = _bind(ui.toggle(
-                        {"abbr": t(lang, "style_abbr_short"),
-                         "full": t(lang, "style_full_short"),
-                         "family": t(lang, "style_family_short")},
-                        value=_opt(state, "normalize", "venue_style") or "abbr",
-                    ).props(
-                        "unelevated no-caps toggle-color=white toggle-text-color=primary"
-                    ).mark("venue-norm-style"),
-                        state, "normalize", "venue_style")
-                    ui.space()
-                    run_button = ui.button(
-                        t(lang, "venues_norm_btn"), icon="preview",
-                    ).props("unelevated color=primary").mark("venue-normalize-preview")
-            normalize_preview = _preview_area(lang, state, "venues", refresh_body, placeholder=False)
+            used_only = None
+            if doc is not None:
+                used_only = _draft(ui.switch(t(lang, "venues_used_only")).mark("venue-used-only"),
+                                   state, "venue_used_only", False)
+            reset_button = ui.button(t(lang, "venues_clear_filters"), icon="filter_alt_off").props(
+                "flat dense color=primary no-caps"
+            ).mark("venue-clear-filters")
 
-            async def run_venue_normalize() -> None:
-                style = venue_style.value or "abbr"
+            ui.separator()
+            if doc is None:
+                ui.label(t(lang, "venues_norm_offline")).classes("hx-tab-note")
+            else:
+                ui.label(t(lang, "venues_filter_scope")).classes("hx-tab-note")
 
-                def compute(before: str) -> str:
-                    work = parse_bibtex(before)
-                    normalize_document(work, NormalizeOptions(
-                        venue_style=style, arxiv_style="keep", fix_entry_types=True,
-                        drop_arxiv_volume=False, add_arxiv_url=False,
-                    ))
-                    return render_document(work, FormatOptions())
+            ui.button(t(lang, "venues_view_results"), icon="arrow_downward", on_click=reveal_results).props(
+                "outline color=primary no-caps"
+            ).classes("hx-venue-jump").mark("venue-view-results")
 
-                await _run_preview_job(
-                    run_button, normalize_preview, state, lang, "venues", compute,
-                    refresh_body, FormatOptions(), t(lang, "venues_norm_label"),
-                )
+        with ui.column().classes("hx-preview hx-venue-results w-full gap-2").props(
+            'data-hx-scroll="results-venues"'
+        ):
+            with ui.card().classes("hx-card w-full p-5 gap-3"):
+                title = "venues_catalog" if doc is None else "venues_results"
+                note = "venues_catalog_note" if doc is None else "venues_results_note"
+                _panel_head("local_library", t(lang, title), t(lang, note))
+                view = None
+                if doc is not None:
+                    view = _draft(ui.toggle(
+                        {"catalog": t(lang, "venues_catalog"), "preview": t(lang, "venues_apply")},
+                    ).props("dense unelevated no-caps toggle-color=white toggle-text-color=primary")
+                        .classes("hx-venue-view w-full").mark("venue-view"), state, "venue_view", "catalog")
+                with ui.element("div").classes("hx-venue-frame w-full"):
+                    with ui.column().classes("hx-venue-catalog w-full gap-2") as catalog:
+                        count = ui.label("").classes("hx-tab-note").props("role=status").mark("venue-count")
+                        grid_area = ui.column().classes("hx-venue-scroll w-full gap-2").props(
+                            'data-hx-scroll="catalog-venues"'
+                        ).mark("venue-results")
+                    if view is not None:
+                        with ui.column().classes("hx-venue-preview-slot w-full gap-3").props(
+                            'data-hx-scroll="apply-venues"'
+                        ) as preview_panel:
+                            ui.label(t(lang, "venues_norm_title")).classes("hx-optlabel")
+                            ui.label(t(lang, "venues_norm_note").format(n=matched)).classes("hx-tab-note")
+                            with ui.element("div").classes("hx-venue-apply-controls w-full"):
+                                _bind(ui.select(
+                                    {key: t(lang, "style_" + key + "_short") for key in _VENUE_STYLES},
+                                    value=_opt(state, "venues", "preset_style"), label=t(lang, "venue_style"),
+                                ).props("outlined dense options-dense").mark("venue-norm-style"),
+                                    state, "venues", "preset_style")
+                                run_button = ui.button(t(lang, "venues_norm_btn"), icon="preview").props(
+                                    "unelevated color=primary no-caps"
+                                ).mark("venue-normalize-preview")
+                                run_button.set_enabled(matched > 0)
+                            preview = _preview_area(lang, state, "venues", refresh_body).classes(
+                                "hx-venue-preview"
+                            )
 
-            run_button.on_click(run_venue_normalize)
+    def render_catalog() -> None:
+        matches = [
+            venue for venue in search_venues(query.value or "")
+            if (kind.value == "ALL" or venue.kind == kind.value)
+            and (family.value == "ALL" or venue.family == family.value)
+            and (used_only is None or not used_only.value or usage[venue.abbr])
+        ]
+        count.set_text(t(lang, "venues_count").format(n=len(matches), total=len(VENUES)))
+        reset_button.set_enabled(bool(query.value or kind.value != "ALL" or family.value != "ALL"
+                                      or (used_only is not None and used_only.value)))
+        grid_area.clear()
+        with grid_area:
+            if matches:
+                with ui.element("div").classes("hx-venue-grid w-full"):
+                    for venue in matches:
+                        _venue_card(venue, lang, usage[venue.abbr])
+            else:
+                with ui.element("div").classes("hx-empty hx-venue-empty"):
+                    ui.icon("search_off", size="32px")
+                    ui.label(t(lang, "no_venues")).classes("hx-panel-title")
+                    ui.label(t(lang, "venues_no_match_hint")).classes("hx-tab-note")
 
-        with ui.row().classes("gap-3 items-end flex-wrap"):
-            query = _draft(ui.input(t(lang, "search_venues")).classes("w-64").mark("venue-search"),
-                           state, "venue_query")
-            family = _draft(ui.select(["ALL", *families()], value="ALL",
-                                     label=t(lang, "family")).classes("w-40"),
-                            state, "venue_family", "ALL")
-        count_label = ui.label("").classes("hx-tab-note")
-        grid_area = ui.column().classes("w-full")
+    def on_filter(_) -> None:
+        if view is not None:
+            view.set_value("catalog")
+        render_catalog()
+        if not _IN_SIM:
+            ui.run_javascript("""
+                const list = document.querySelector('[data-hx-scroll="catalog-venues"]');
+                if (list) list.scrollTop = 0;
+            """)
 
-        def render() -> None:
-            venues = search_venues(query.value) if query.value else list(VENUES)
-            if family.value and family.value != "ALL":
-                venues = [v for v in venues if v.family == family.value]
-            count_label.set_text(t(lang, "venues_count").format(n=len(venues)))
-            grid_area.clear()
-            with grid_area:
-                if not venues:
-                    with ui.element("div").classes("hx-empty"):
-                        ui.label(t(lang, "no_venues"))
-                    return
-                with ui.element("div").classes("w-full").style(
-                    "display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr));"
-                    "gap:12px"
-                ):
-                    for venue in venues:
-                        _venue_card(venue, lang, usage.get(venue.abbr, 0))
+    def reset_filters() -> None:
+        query.set_value("")
+        kind.set_value("ALL")
+        family.set_value("ALL")
+        if used_only is not None:
+            used_only.set_value(False)
 
-        query.on_value_change(lambda _: render())
-        family.on_value_change(lambda _: render())
-        render()
+    for widget in (query, kind, family, used_only):
+        if widget is not None:
+            widget.on_value_change(on_filter)
+    reset_button.on_click(reset_filters)
+    render_catalog()
+
+    if view is not None:
+        def show_view() -> None:
+            showing_preview = view.value == "preview"
+            catalog.set_visibility(not showing_preview)
+            preview_panel.set_visibility(showing_preview)
+
+        async def run_venue_normalize() -> None:
+            if not matched:
+                return
+            style = _opt(state, "venues", "preset_style")
+            await _run_preview_job(
+                run_button, preview, state, lang, "venues", lambda before: _normalize_venue_preview(before, style),
+                refresh_body, FormatOptions(), t(lang, "venues_norm_label"),
+            )
+
+        view.on_value_change(lambda _: show_view())
+        run_button.on_click(run_venue_normalize)
+        show_view()

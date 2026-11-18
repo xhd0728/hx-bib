@@ -21,6 +21,7 @@ DEFAULT_SETTINGS = {
         "drop_arxiv_volume": True, "add_arxiv_url": True,
     },
     "verify": {"delay": 0.8, "workers": 1, "use_cache": True},
+    "venues": {"preset_style": "abbr"},
     "check": {
         "required_fields": True, "check_venues": True, "check_months": True,
         "check_title_period": True, "check_key_style": True,
@@ -33,6 +34,7 @@ _CHOICES = {
     "field_order": {"standard", "alphabetical", "keep"},
     "sort": {"none", "key", "year", "type", "title"},
     "venue_style": {"abbr", "full", "family", "keep"},
+    "preset_style": {"abbr", "full", "family"},
     "arxiv_style": {"journal", "misc", "keep"},
 }
 
