@@ -36,7 +36,6 @@ const state = {
   },
   settings: structuredClone(defaults),
   drafts: {},
-  entryArxiv: {},
 };
 try {
   const saved = JSON.parse(
@@ -356,7 +355,6 @@ function renderSettings() {
 async function loadBib(text, name) {
   const generation = ++state.generation;
   const parsed = await process({ op: "parse", text });
-  const identifiers = await process({ op: "identifiers", text });
   if (generation !== state.generation) return;
   if (
     !parsed.entries.length &&
@@ -365,6 +363,8 @@ async function loadBib(text, name) {
   )
     throw new Error(t("invalid_bib"));
   if (state.running) await invoke("control_run", { action: "stop" });
+  state.runId++;
+  $("progress").textContent = "";
   Object.assign(state, {
     name,
     text,
@@ -376,9 +376,6 @@ async function loadBib(text, name) {
     reports: [],
     arxiv: [],
   });
-  state.entryArxiv = Object.fromEntries(
-    parsed.entries.map((entry, i) => [entry.key, identifiers[i].arxiv_id]),
-  );
   state.comparison = await process({ op: "diff", text, after: text });
   renderResults();
 }
@@ -442,9 +439,7 @@ function renderResults() {
         (result) => result.entry.key === comparison.key,
       );
       const arxiv = state.arxiv.find(
-        (result) =>
-          result.arxiv_id &&
-          result.arxiv_id === state.entryArxiv[comparison.key],
+        (result) => result.arxiv_id && result.arxiv_id === comparison.arxiv_id,
       );
       if (
         !state.all &&
@@ -613,6 +608,8 @@ async function runOnline(arxivOnly, ids = null) {
   if (state.running) return;
   state.running = true;
   state.paused = false;
+  state.cancelRequested = false;
+  $("pause").textContent = t("pause");
   const generation = state.generation;
   const runId = ++state.runId;
   const revision = state.text;
@@ -657,7 +654,9 @@ async function runOnline(arxivOnly, ids = null) {
       });
     } else if (arxivOnly) state.arxiv = results;
     else state.reports = results;
-    $("progress").textContent = t("verify_done").replace("{n}", results.length);
+    $("progress").textContent = t(
+      state.cancelRequested ? "stopped_partial" : "verify_done",
+    ).replace("{n}", results.length);
   } finally {
     state.running = false;
     $("run-controls").hidden = true;
@@ -730,7 +729,11 @@ action($("pause"), async () => {
   await invoke("control_run", { action: state.paused ? "pause" : "resume" });
   $("pause").textContent = t(state.paused ? "resume" : "pause");
 });
-action($("stop"), () => invoke("control_run", { action: "stop" }));
+action($("stop"), () => {
+  state.cancelRequested = true;
+  $("progress").textContent = t("verify_stopping");
+  return invoke("control_run", { action: "stop" });
+});
 action($("diff-only"), () => {
   state.all = false;
   $("diff-only").classList.add("selected");

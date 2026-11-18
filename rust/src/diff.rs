@@ -186,6 +186,7 @@ pub fn match_entries(before: &[Entry], after: &[Entry]) -> Vec<(Option<usize>, O
 #[derive(Clone, Debug, Serialize)]
 pub struct Comparison {
     pub key: String,
+    pub arxiv_id: Option<String>,
     pub kind: String,
     pub moved: bool,
     pub left: Option<String>,
@@ -236,6 +237,10 @@ pub fn compare(before: &str, after: &str) -> Vec<Comparison> {
         let ops = opcodes(&a, &b);
         result.push(Comparison {
             key,
+            arxiv_id: j
+                .map(|j| &new.entries[j])
+                .or_else(|| i.map(|i| &old.entries[i]))
+                .and_then(crate::identifiers::arxiv_id),
             kind: kind.into(),
             moved: is_moved,
             left,
@@ -268,6 +273,7 @@ pub fn compare(before: &str, after: &str) -> Vec<Comparison> {
             0,
             Comparison {
                 key: "File content".into(),
+                arxiv_id: None,
                 kind: "modified".into(),
                 moved: false,
                 left: Some(left),

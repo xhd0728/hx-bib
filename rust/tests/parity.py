@@ -147,10 +147,12 @@ def cases():
         ("@misc{a,title={A}}\n@misc{b,title={B}}", "@misc{b,title={B}}\n@misc{a,title={A}}"),
         ("@article{x,\n title={A}\n}", "@article{x,\n    title={A}\n}"),
         ("@string{venue=\"First\"}\n@misc{x}", "@string{venue=\"Last\"}\n@misc{x}"),
+        ("@misc{same,eprint={2401.12345}}\n@misc{same,eprint={2502.14739}}", "@misc{same,eprint={2502.14739}}\n@misc{same,eprint={2401.12345}}"),
     ]
     for before, after in pairs:
         result = [{"key": (c.after or c.before).key if c.after or c.before else "File content",
-                   "kind": c.kind, "moved": c.moved, "left": c.left, "right": c.right}
+                   "kind": c.kind, "moved": c.moved, "left": c.left, "right": c.right,
+                   "arxiv_id": identifiers.extract_arxiv_id(c.after or c.before) if c.after or c.before else None}
                   for c in compare_entries(before, after)]
         yield {"op": "diff", "text": before, "after": after}, result
     for enabled in ({"format": True}, {"format": False, "clean": True, "check": True},
