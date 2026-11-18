@@ -110,6 +110,7 @@ VERDICT_COLOR = {
 
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
+_TABLE_UPLOAD_LIMIT = 2_000_000
 
 # Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
 # button and its hidden <input type=file> have no accessible names.  Patch them
@@ -126,7 +127,9 @@ _QUASAR_A11Y_PATCH = """
     });
     document.querySelectorAll('input.q-uploader__input').forEach(function (i) {
       if (!i.hasAttribute('aria-label'))
-        i.setAttribute('aria-label', '选择 BibTeX 文件 / Choose BibTeX file');
+        i.setAttribute('aria-label', i.closest('.hx-table-upload')
+          ? '选择 .tex 文件 / Choose a .tex file'
+          : '选择 BibTeX 文件 / Choose BibTeX file');
     });
   };
   new MutationObserver(fix).observe(document.documentElement,
@@ -460,19 +463,13 @@ def _table_layout_only(before_body: str, after_body: str) -> bool:
         return False
     sig_l = _table_signature(before_body)
     sig_r = _table_signature(after_body)
-    return sig_l is None or sig_l == sig_r
+    return sig_l is not None and sig_l == sig_r
 
 
 def table_result_html(result_text: str, lang: str) -> str:
-    """The formatted output itself, front and centre (scrollable)."""
     return (
-        f'<details class="hx-tblock" open>'
-        f"<summary>"
-        f'<span class="material-icons hx-tcompare-ico">auto_awesome</span>'
-        f'<span class="hx-tblock-title">{_esc(t(lang, "table_result_title"))}</span>'
-        f"</summary>"
-        f'<div class="hx-tblock-body"><pre class="hx-pre">{_esc(result_text)}</pre></div>'
-        f"</details>"
+        f'<pre class="hx-pre hx-table-code" tabindex="0" '
+        f'aria-label="{_esc(t(lang, "table_result_title"))}">{_esc(result_text)}</pre>'
     )
 
 
@@ -520,22 +517,23 @@ def table_compare_html(before: str, after: str, lang: str) -> str:
             f"</summary>"
         )
         if not changed:
-            blocks.append(f'<details class="hx-tblock hx-tcompare">{head}</details>')
-            continue
-        note = t(lang, "table_layout_note" if layout_only else "table_content_note")
+            note = t(lang, "table_same_note")
+        else:
+            note = t(lang, "table_layout_note" if layout_only else "table_content_note")
+        opened = " open" if changed else ""
         blocks.append(
-            f'<details class="hx-tblock hx-tcompare" open>{head}'
+            f'<details class="hx-tblock hx-tcompare"{opened}>{head}'
             f'<div class="hx-tblock-body"><div class="hx-tpanes">'
             f'<div class="hx-tpane">'
             f'<span class="hx-tpane-label hx-tpane-before">'
             f'<span class="material-icons">remove</span>'
             f'{_esc(t(lang, "table_before"))}</span>'
-            f'<pre class="hx-pre">{_esc(left)}</pre></div>'
+            f'<pre class="hx-pre" tabindex="0">{_esc(left)}</pre></div>'
             f'<div class="hx-tpane">'
             f'<span class="hx-tpane-label hx-tpane-after">'
             f'<span class="material-icons">check</span>'
             f'{_esc(t(lang, "table_after"))}</span>'
-            f'<pre class="hx-pre">{_esc(right)}</pre></div>'
+            f'<pre class="hx-pre" tabindex="0">{_esc(right)}</pre></div>'
             f'<div class="hx-tnote">{_esc(note)}</div>'
             f"</div></div></details>"
         )
@@ -893,7 +891,14 @@ def _build_page(initial_mode: str) -> None:
     ui.number.default_props("outlined dense")
     state = _new_state()
     state["mode"] = initial_mode
+    workspaces = {}
+    mounted = set()
     ui.context.client.on_delete(lambda: invalidate_results(state))
+
+    def refresh_workspaces() -> None:
+        for mode in mounted:
+            _, render = workspaces[mode]
+            render.refresh()
 
     def _apply_lang_attr() -> None:
         if _IN_SIM:
@@ -915,7 +920,7 @@ def _build_page(initial_mode: str) -> None:
                 state["lang"] = state["settings"].get("lang") or state["lang"]
                 _apply_lang_attr()
                 header.refresh()
-                body.refresh()
+                refresh_workspaces()
         except Exception:  # noqa: BLE001 - no JS/browser: keep defaults
             pass
 
@@ -942,7 +947,16 @@ def _build_page(initial_mode: str) -> None:
         state["settings_dirty"] = True
         _apply_lang_attr()
         header.refresh()
-        body.refresh()
+        refresh_workspaces()
+
+    def show_workspace(mode: str) -> None:
+        if mode not in mounted:
+            slot, render = workspaces[mode]
+            with slot:
+                render()
+            mounted.add(mode)
+        for name, (slot, _) in workspaces.items():
+            slot.set_visibility(name == mode)
 
     def switch_mode(mode: str) -> None:
         """Flip between the BibTeX workspace and the LaTeX table formatter in place."""
@@ -967,7 +981,7 @@ def _build_page(initial_mode: str) -> None:
                 button.props('aria-current="page"')
             else:
                 button.props(remove="aria-current")
-        body.refresh()
+        show_workspace(mode)
 
     with ui.element("div").classes("hx-page w-full"):
         header_widgets = {}
@@ -978,16 +992,12 @@ def _build_page(initial_mode: str) -> None:
         header()
 
         with ui.element("main").classes("hx-main w-full mx-auto px-4 py-4"):
-            # ---------------- body ----------------
             @ui.refreshable
             def body() -> None:
                 lang = state["lang"]
                 with ui.element("div").classes("hx-body w-full").props(
-                    f'data-hx-scroll="root-{state["mode"]}"'
+                    'data-hx-scroll="root-tools"'
                 ):
-                    if state["mode"] == "table":
-                        _render_table_page(state, lang, body)
-                        return
                     if state["venues_only"]:
                         _render_venues_only(state, lang, body)
                         return
@@ -1031,7 +1041,16 @@ def _build_page(initial_mode: str) -> None:
                         tabs.on_value_change(select_tab)
                         active_panel()
 
-            body()
+            @ui.refreshable
+            def table_body() -> None:
+                with ui.element("div").classes("hx-body w-full").props('data-hx-scroll="root-table"'):
+                    _render_table_page(state, state["lang"])
+
+            workspaces.update(
+                tools=(ui.element("div").classes("hx-mode-slot"), body),
+                table=(ui.element("div").classes("hx-mode-slot"), table_body),
+            )
+            show_workspace(initial_mode)
 
 
 def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> None:
@@ -1193,152 +1212,240 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
 # ---------------------------------------------------------------------------
 # LaTeX table formatter page (/table)
 # ---------------------------------------------------------------------------
-def _render_table_page(state: dict, lang: str, body) -> None:
-    result_widgets = {}
+def _render_table_page(state: dict, lang: str) -> None:
+    running = False
 
-    def update_freshness() -> None:
-        res = state["result"]
-        fresh = res is not None and res[0] == state["source_text"] and (
-            state.get("result_options") == (state["amp"], state["blank_lines"], state["row_indent"])
+    def options() -> TableFormatOptions:
+        return TableFormatOptions(
+            amp_style=state["amp"],
+            blank_lines_around_rules=state["blank_lines"],
+            row_indent=state["row_indent"],
         )
-        for key in ("copy", "download"):
-            if key in result_widgets:
-                result_widgets[key].set_enabled(fresh)
-        if "status" in result_widgets:
-            result_widgets["status"].set_text(t(lang, "table_current" if fresh else "table_stale"))
+
+    def matches_input() -> bool:
+        result = state["result"]
+        return (
+            result is not None and result[0] == state["source_text"]
+            and state["result_options"] == options()
+        )
+
+    def export_text() -> Optional[str]:
+        if matches_input() and not running and state["result"][1].tables:
+            return state["result"][1].text
+        return None
+
+    async def copy_result() -> None:
+        if (text := export_text()) is not None:
+            await _copy_text(text, lang)
+
+    def download_result() -> None:
+        if (text := export_text()) is not None:
+            name = state["table_source_name"]
+            filename = f"{Path(name).stem}.formatted.tex" if name else "tables.tex"
+            ui.download(text.encode("utf-8"), filename)
+
+    def update_controls() -> None:
+        fmt_button.set_enabled(not running and bool(state["source_text"].strip()))
+        allowed = export_text() is not None
+        copy.set_enabled(allowed)
+        download.set_enabled(allowed)
+        stored = state["result"]
+        if running:
+            key = "table_running"
+        elif stored is None:
+            key = "table_empty_preview"
+        elif not matches_input():
+            key = "table_stale"
+        elif not stored[1].tables:
+            key = "table_no_tables"
+        else:
+            key = "table_unchanged" if stored[0] == stored[1].text else "table_current"
+        status.set_text(t(lang, key))
 
     def update_input(key: str, value) -> None:
         state[key] = value
-        update_freshness()
+        update_controls()
 
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("grid_on", t(lang, "table_title"), t(lang, "table_note"))
-        ui.label(t(lang, "table_paste_title")).classes("hx-tab-note")
-        source = ui.textarea(
-            placeholder=t(lang, "table_paste_placeholder"),
-        ).classes("w-full").props(
-            f"outlined rows=8 aria-label='{t(lang, 'table_paste_title')}'"
-        ).style(
-            "font-family:ui-monospace,monospace;font-size:12.5px"
-        ).mark("table-input")
-        if state["source_text"]:
-            source.value = state["source_text"]
-        source.on_value_change(lambda e: update_input("source_text", e.value or ""))
+    def replace_source(text: str, name: str = "") -> None:
+        state.update(source_text=text, table_source_name=name)
+        source.value = text
+        source_name.set_text(t(lang, "table_imported").format(name=name) if name else t(lang, "table_source_hint"))
+        update_controls()
 
-        def run_format() -> None:
-            text = state["source_text"] or (source.value or "")
-            if not text.strip():
-                ui.notify(t(lang, "table_empty"), type="warning", position="bottom-right")
+    async def import_tex(e: events.UploadEventArguments) -> None:
+        value_before = source.value
+        try:
+            if Path(e.file.name).suffix.lower() != ".tex" or e.file.size() > _TABLE_UPLOAD_LIMIT:
+                ui.notify(t(lang, "table_upload_rejected"), type="warning")
                 return
-            opts = TableFormatOptions(
-                amp_style=state["amp"],
-                blank_lines_around_rules=state["blank_lines"],
-                row_indent=state["row_indent"],
-            )
-            state["result"] = (text, format_tables(text, opts))
-            state["result_options"] = (state["amp"], state["blank_lines"], state["row_indent"])
-            output.refresh()
-
-        with ui.element("div").classes("hx-optbar w-full"):
-            with ui.row().classes("items-center gap-3 no-wrap"):
-                ui.label(t(lang, "table_amp")).classes("hx-optlabel")
-                amp = ui.toggle(
-                    {
-                        "space": t(lang, "table_amp_space"),
-                        "align": t(lang, "table_amp_align"),
-                        "none": t(lang, "table_amp_none"),
-                    },
-                    value=state["amp"],
-                ).props(
-                    "dense unelevated no-caps inline toggle-color=white "
-                    "toggle-text-color=primary"
-                ).mark("table-amp")
-                amp.on_value_change(lambda e: update_input("amp", e.value or "space"))
-            blank = ui.switch(
-                t(lang, "table_blank"), value=state["blank_lines"],
-            ).mark("table-blank")
-            blank.on_value_change(lambda e: update_input("blank_lines", bool(e.value)))
-            indent = ui.number(
-                t(lang, "table_indent_label"), value=state["row_indent"],
-                min=0, max=16, step=1,
-            ).classes("w-52").props("dense outlined").mark("table-indent")
-            indent.on_value_change(
-                lambda e: update_input("row_indent", max(0, min(16, int(e.value or 0))))
-            )
-
-        def load_example() -> None:
-            state["source_text"] = TABLE_EXAMPLE
-            source.value = TABLE_EXAMPLE
-
-        with ui.row().classes("w-full items-center gap-2"):
-            ui.button(
-                t(lang, "table_example"), icon="auto_awesome", on_click=load_example,
-            ).props("flat color=primary no-caps").mark("table-example")
-            ui.space()
-            ui.label("Ctrl + Enter").classes("hx-kbd")
-            fmt_button = ui.button(
-                t(lang, "table_format_btn"), icon="bolt", on_click=run_format,
-            ).props("unelevated color=primary no-caps").mark("table-format")
-            fmt_button.tooltip("Ctrl + Enter")
-
-        source.on("keydown.ctrl.enter", run_format)
-
-    @ui.refreshable
-    def output() -> None:
-        with ui.card().classes("hx-card w-full p-5 gap-3"):
-            res = state["result"]
-            if res is None:
-                ui.html(
-                    f'<div class="hx-empty">{_esc(t(lang, "table_empty_preview"))}</div>'
-                ).classes("w-full")
+            data = e.file.read()
+            if inspect.isawaitable(data):
+                data = await data
+            if source.is_deleted or source.value != value_before:
                 return
-            before, result = res
-            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
-                with ui.row().classes("items-center gap-2 flex-wrap"):
-                    ui.html(
-                        f'<span class="hx-chip" style="color:#4338ca;background:#4338ca1a">'
-                        f'{_esc(t(lang, "table_summary").format(tab=result.tables, rows=result.rows))}'
-                        f'</span>'
-                    )
-                    if result.tables and result.text == before:
-                        ui.html(
-                            f'<span class="hx-chip" style="color:#475569;background:#f1f5f9">'
-                            f'{_esc(t(lang, "table_unchanged"))}</span>'
-                        )
-                with ui.row().classes("items-center gap-2"):
-                    result_widgets["copy"] = ui.button(
-                        t(lang, "table_copy_result"), icon="content_copy",
-                        on_click=_copy_handler(result.text, lang),
-                    ).props("outline color=primary no-caps").mark("table-copy")
-                    result_widgets["download"] = ui.button(
-                        t(lang, "table_download"), icon="download",
-                        on_click=lambda: ui.download(
-                            result.text.encode("utf-8"), "tables.tex"
-                        ),
-                    ).props("outline no-caps").mark("table-download")
-            result_widgets["status"] = ui.label("").classes("hx-tab-note").style("min-height:20px")
-            update_freshness()
-            if result.tables == 0:
-                ui.html(f'<div class="hx-empty">{_esc(t(lang, "table_no_tables"))}</div>')
-            else:
-                # Result first: the formatted text is the main output…
-                ui.html(table_result_html(result.text, lang)).classes("w-full")
-                # …then an opt-in, per-table before/after view for checking.
-                if result.text != before:
-                    ui.label(t(lang, "table_compare_title")).classes(
-                        "hx-tab-note font-bold"
-                    )
-                    ui.html(table_compare_html(before, result.text, lang)).classes("w-full")
-            if result.warnings:
-                with ui.expansion(
-                    t(lang, "table_warnings").format(n=len(result.warnings)), icon="info",
-                ).classes("w-full"):
-                    for warning in result.warnings:
-                        ui.label(f"• {warning}").classes("hx-tab-note")
+            text = _read_file_bytes(data)
+            if not text.strip() or "\x00" in text:
+                ui.notify(t(lang, "table_bad_file"), type="warning")
+                return
+            replace_source(text, e.file.name)
+        except OSError:
+            ui.notify(t(lang, "table_read_failed"), type="negative")
+        finally:
+            if not e.sender.is_deleted:
+                e.sender.reset()
 
+    async def run_format() -> None:
+        nonlocal running
+        text = state["source_text"]
+        if running or not text.strip():
+            return
+        opts = options()
+        running = True
+        _busy(fmt_button, True)
+        update_controls()
+        try:
+            result = await asyncio.to_thread(format_tables, text, opts)
+            if not fmt_button.is_deleted:
+                state.update(result=(text, result), result_options=opts)
+                render_result()
+        except Exception as exc:
+            if not fmt_button.is_deleted:
+                ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
+        finally:
+            running = False
+            if not fmt_button.is_deleted:
+                _busy(fmt_button, False)
+                update_controls()
 
+    def show_preview() -> None:
+        if not _IN_SIM:
+            ui.run_javascript("""
+                document.querySelector('.hx-table-review')?.scrollIntoView({
+                    block: 'start', behavior: 'instant',
+                });
+            """)
 
-    output()
+    with ui.element("div").classes("hx-operation-grid hx-table-layout w-full"):
+        with ui.card().classes("hx-card hx-options hx-table-input-card w-full gap-3"):
+            _panel_head("grid_on", t(lang, "table_title"), t(lang, "table_note"))
+            ui.html(_steps_html(lang, ["steps_table_input", "steps_table_options", "steps_table_review"]))
+            with ui.column().classes("hx-table-input-body w-full gap-3").props(
+                'data-hx-scroll="options-table"'
+            ):
+                ui.label(t(lang, "table_paste_title")).classes("hx-optlabel")
+                with ui.element("div").classes("hx-table-source-actions w-full"):
+                    ui.upload(
+                        label=t(lang, "table_import"),
+                        on_upload=import_tex,
+                        on_rejected=lambda: ui.notify(t(lang, "table_upload_rejected"), type="warning"),
+                        auto_upload=True, max_file_size=_TABLE_UPLOAD_LIMIT,
+                    ).props('accept=".tex" flat').classes("hx-uploader hx-table-upload").mark("table-import")
+                    ui.button(t(lang, "table_example"), icon="auto_awesome",
+                              on_click=lambda: replace_source(TABLE_EXAMPLE)).props(
+                        "outline color=primary no-caps"
+                    ).mark("table-example")
+                imported = state["table_source_name"]
+                source_name = ui.label(
+                    t(lang, "table_imported").format(name=imported) if imported else t(lang, "table_source_hint")
+                ).classes("hx-tab-note hx-table-source").mark("table-source")
+                source = ui.textarea(
+                    placeholder=t(lang, "table_paste_placeholder"),
+                    value=state["source_text"],
+                ).classes("hx-table-editor w-full").props(
+                    f'outlined rows=7 wrap=off aria-label="{t(lang, "table_paste_title")}"'
+                ).mark("table-input")
+                source.on_value_change(lambda e: update_input("source_text", e.value or ""))
+                source.on("keydown.ctrl.enter.prevent", run_format)
+
+                ui.separator()
+                ui.label(t(lang, "steps_table_options")).classes("hx-optlabel")
+                with ui.element("div").classes("hx-table-format-options w-full"):
+                    ui.select(
+                        {"space": t(lang, "table_amp_space"),
+                         "align": t(lang, "table_amp_align"),
+                         "none": t(lang, "table_amp_none")},
+                        value=state["amp"], label=t(lang, "table_amp"),
+                        on_change=lambda e: update_input("amp", e.value or "space"),
+                    ).mark("table-amp")
+                    ui.number(
+                        t(lang, "table_indent_label"), value=state["row_indent"],
+                        min=0, max=16, step=1, precision=0,
+                        on_change=lambda e: update_input("row_indent", max(0, min(16, int(e.value or 0)))),
+                    ).mark("table-indent")
+                ui.switch(
+                    t(lang, "table_blank"), value=state["blank_lines"],
+                    on_change=lambda e: update_input("blank_lines", bool(e.value)),
+                ).mark("table-blank")
+
+            with ui.element("div").classes("hx-table-run w-full"):
+                ui.label("Ctrl + Enter").classes("hx-kbd")
+                fmt_button = ui.button(t(lang, "table_format_btn"), icon="auto_fix_high", on_click=run_format
+                                       ).props("unelevated color=primary no-caps").mark("table-format")
+                ui.button(t(lang, "table_show_result"), icon="arrow_downward", on_click=show_preview).props(
+                    "outline color=primary no-caps"
+                ).classes("hx-table-jump").mark("table-show-result")
+
+        with ui.column().classes("hx-preview hx-table-review w-full gap-2"):
+            with ui.card().classes("hx-card w-full gap-3"):
+                _panel_head("difference", t(lang, "table_review_title"), t(lang, "table_review_note"))
+                status = ui.label("").classes("hx-tab-note hx-table-status").props("role=status").mark("table-status")
+                with ui.element("div").classes("hx-table-tabs w-full"):
+                    view = ui.toggle(
+                        {"code": t(lang, "table_result_title"), "compare": t(lang, "table_compare_title")},
+                        value=state["table_view"],
+                    ).props("dense unelevated no-caps toggle-color=white toggle-text-color=primary"
+                            ).classes("w-full").mark("table-view")
+                    summary = ui.label("").classes("hx-chip hx-table-summary").mark("table-summary")
+                with ui.element("div").classes("hx-table-frame w-full"):
+                    with ui.element("div").classes("hx-table-pane").props('data-hx-scroll="table-code"') as code:
+                        code_html = ui.html("").classes("w-full").mark("table-code")
+                    with ui.element("div").classes("hx-table-pane").props('data-hx-scroll="table-compare"') as compare:
+                        compare_html = ui.html("").classes("w-full").mark("table-compare")
+                with ui.element("div").classes("hx-preview-actions hx-table-export w-full"):
+                    copy = ui.button(t(lang, "table_copy_result"), icon="content_copy", on_click=copy_result).props(
+                        "unelevated color=primary no-caps"
+                    ).mark("table-copy")
+                    download = ui.button(t(lang, "table_download"), icon="download", on_click=download_result).props(
+                        "outline color=primary no-caps"
+                    ).mark("table-download")
+
+    def update_view() -> None:
+        selected = view.value or "code"
+        state["table_view"] = selected
+        code.set_visibility(selected == "code")
+        compare.set_visibility(selected == "compare")
+
+    def render_result() -> None:
+        stored = state["result"]
+        result = stored[1] if stored else None
+        has_tables = bool(result and result.tables)
+        summary.set_text(t(lang, "table_summary").format(
+            tab=result.tables, rows=result.rows,
+        ) if result else t(lang, "table_summary_empty"))
+        view.set_enabled(has_tables)
+        if not has_tables:
+            view.set_value("code")
+        notes = ""
+        if result and result.warnings:
+            label = _esc(t(lang, "table_warnings").format(n=len(result.warnings)))
+            items = "".join(f"<li>{_esc(note)}</li>" for note in result.warnings)
+            notes = f'<details class="hx-table-notices"><summary>{label}</summary><ul>{items}</ul></details>'
+        if has_tables:
+            code_html.set_content(notes + table_result_html(result.text, lang))
+            compare_html.set_content(notes + table_compare_html(stored[0], result.text, lang))
+        else:
+            key = "table_no_tables" if result else "table_preview_placeholder"
+            code_html.set_content(
+                notes + '<div class="hx-empty hx-table-empty">'
+                '<span class="material-icons" aria-hidden="true">table_chart</span>'
+                f"{_esc(t(lang, key))}</div>"
+            )
+            compare_html.set_content("")
+        update_view()
+
+    view.on_value_change(lambda _: update_view())
+    render_result()
+    update_controls()
 
 # ---------------------------------------------------------------------------
 # Status bar (shared working copy)

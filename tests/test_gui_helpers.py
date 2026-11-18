@@ -127,8 +127,8 @@ def test_table_compare_per_table_blocks():
 
 def test_table_compare_unchanged_collapses():
     html = table_compare_html(TABLE_BEFORE, TABLE_BEFORE, "en")
-    assert "<details" in html
-    assert "<pre" not in html                       # header-only card, closed
+    assert html.startswith('<details class="hx-tblock hx-tcompare">')
+    assert html.count("<pre") == 2                   # available on expansion
     assert "hx-kind-unchanged" in html
 
 

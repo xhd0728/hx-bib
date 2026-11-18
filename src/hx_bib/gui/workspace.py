@@ -75,8 +75,8 @@ def new_state() -> dict:
         "check_report": None, "check_filter": "ALL", "check_config": None, "check_job": None,
         "progress": idle_progress(), "run_control": None,
         "tab": "format", "venues_only": False,
-        "source_text": "", "amp": "space", "blank_lines": True,
-        "row_indent": 0, "result": None,
+        "source_text": "", "table_source_name": "", "amp": "space", "blank_lines": True,
+        "row_indent": 0, "result": None, "result_options": None, "table_view": "code",
         "settings": merge_settings(DEFAULT_SETTINGS, {}), "settings_dirty": False,
     }
 

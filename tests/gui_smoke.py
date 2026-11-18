@@ -233,21 +233,23 @@ async def main() -> None:
         # LaTeX table formatter page (/table).
         await user.open("/table")
         await user.should_see("LaTeX 表格格式化")
+        assert not next(iter(user.find(marker="table-copy").elements)).enabled
         user.find(marker="table-example").click()
         await settle()
         user.find(marker="table-format").click()
-        await settle()
-        await user.should_see("个表格")
+        await user.should_see("个表格", retries=20)
         await user.should_see("格式化结果")
+        view = next(iter(user.find(marker="table-view").elements))
+        view.set_value("compare")
         await user.should_see("修改前")
-        print("✓ table formatter: example loads and formats (result-first view)")
+        print("✓ table formatter: example loads, formats and compares")
 
         # Formatting only refreshes output: textarea widget and focus survive.
         input_widget = next(iter(user.find(marker="table-input").elements))
         user.find(marker="table-format").click()
         await settle()
         assert next(iter(user.find(marker="table-input").elements)) is input_widget
-        user.find(marker="table-amp").trigger("update:model-value", 1)
+        next(iter(user.find(marker="table-amp").elements)).set_value("align")
         await settle()
         await user.should_see("输入或选项已变化")
         assert not next(iter(user.find(marker="table-copy").elements)).enabled
@@ -263,14 +265,50 @@ async def main() -> None:
         await user.should_see("个表格")
         print("✓ table formatter: pasted table formats")
 
-        # In-page mode switch: the header control flips modes without reload.
+        # Both workspaces stay mounted with their current view and input.
+        result_widget = next(iter(user.find(marker="table-compare").elements))
+        pasted_table = input_widget.value
         user.find(marker="nav-tools").click()
-        await settle()
         await user.should_see("上传 BibTeX 文件")
+        user.find(marker="bib-example").click()
+        await user.should_see(marker="tab-check")
+        user.find(marker="tab-check").click()
+        await user.should_see(marker="run-check")
+        user.find(marker="run-check").click()
+        await user.should_see(marker="check-filter", retries=20)
         user.find(marker="nav-table").click()
-        await settle()
         await user.should_see("LaTeX 表格格式化")
-        print("✓ header switch flips tools ⇄ table in place")
+        assert next(iter(user.find(marker="table-input").elements)) is input_widget
+        assert input_widget.value == pasted_table and view.value == "compare"
+        assert next(iter(user.find(marker="table-compare").elements)) is result_widget
+        assert next(iter(user.find(marker="table-download").elements)).enabled
+        user.find(marker="nav-tools").click()
+        await user.should_see(marker="check-filter")
+        user.find(marker="nav-table").click()
+        await user.should_see(marker="table-input")
+        print("✓ both workspaces keep their input, options, report and active view")
+
+        from nicegui.elements.upload_files import SmallFileUpload
+
+        uploader = next(iter(user.find(marker="table-import").elements))
+        imported = "\\documentclass{article}\n" + pasted_table
+        await uploader.handle_uploads([SmallFileUpload("example.tex", "text/plain", imported.encode("utf-8-sig"))])
+        await user.should_see("已导入：example.tex")
+        assert input_widget.value == imported
+        assert not next(iter(user.find(marker="table-download").elements)).enabled
+        await uploader.handle_uploads([SmallFileUpload("empty.tex", "text/plain", b" ")])
+        await user.should_see("文件为空或不是可读取的文本，编辑区未改动。")
+        assert input_widget.value == imported
+        user.find(marker="table-format").click()
+        await user.should_see("结果与当前输入和选项一致。", retries=20)
+        assert next(iter(user.find(marker="table-download").elements)).enabled
+
+        input_widget.set_value("LaTeX without a table")
+        user.find(marker="table-format").click()
+        await user.should_see("没有找到 tabular / tabularx / longtable 等表格环境", retries=20)
+        assert not next(iter(user.find(marker="table-copy").elements)).enabled
+        assert not next(iter(user.find(marker="table-download").elements)).enabled
+        print("✓ .tex import, invalid input protection and export guards")
 
         # Identical output should never add a redundant history entry.
         await user.open("/")
