@@ -20,10 +20,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from ..core.model import Entry
 from ..core.identifiers import extract_arxiv_id
+from ..core.model import Entry
 from .net import BROWSER_UA, Net
-from .textutil import asciifold, delatex, norm_title, surname_of_full, title_ratio
+from .textutil import asciifold, norm_title, surname_of_full, title_ratio
 
 
 @dataclass
@@ -42,6 +42,7 @@ class SourceRecord:
     queried: Optional[str] = None
     match_ratio: Optional[float] = None
     best_ratio: Optional[float] = None
+    publication_type: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -352,6 +353,7 @@ def dblp_search(net: Net, title: str, first_author: Optional[str] = None) -> Sou
         source="DBLP", found=True, title=best.get("title", ""),
         authors=[a for a in authors if a], raw_authors=authors_raw,
         year=str(best.get("year", "")) or None, venue=best.get("venue", ""),
+        publication_type=best.get("type") or "",
         doi=best.get("doi"), url=best.get("ee") or best.get("url"),
         match_ratio=round(best_r, 2),
     )

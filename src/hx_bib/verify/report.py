@@ -9,7 +9,6 @@ import re
 import time
 from typing import Dict, List
 
-from ..core.model import Entry
 from ..verify.checker import FAIL, INFO, MINOR, OK, SEVERITY_LABEL, WARN, CheckResult
 from ..verify.textutil import delatex
 
@@ -309,6 +308,9 @@ def build_json(results: List[CheckResult], bibfile: str) -> str:
             "verdict_label": SEVERITY_LABEL[r.verdict],
             "title": delatex(entry.get("title") or ""),
             "arxiv_id": r.arxiv_id,
+            "arxiv_publication": (
+                {"status": r.publication[0], "evidence": r.publication[1]} if r.publication else None
+            ),
             "doi": r.doi,
             "openreview_id": r.openreview_id,
             "issues": [{"severity": s, "message": m} for s, m in r.issues],

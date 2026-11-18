@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..core.identifiers import extract_arxiv_id, extract_doi, extract_openreview_id
-from ..core.model import Document, Entry
+from ..core.model import Entry
 from .net import Net
 from .sources import (
     SourceRecord,
@@ -69,6 +69,7 @@ class CheckResult:
     reference: Optional[SourceRecord] = None
     author_diff: Optional[dict] = None
     any_error: bool = False
+    publication: Optional[Tuple[str, str]] = None
 
     def worst_severity(self) -> str:
         if not self.issues:
@@ -233,6 +234,31 @@ def _venue_check(entry: Entry, records: Dict[str, SourceRecord]) -> Optional[Tup
 # ---------------------------------------------------------------------------
 # Per-entry verification
 # ---------------------------------------------------------------------------
+def _arxiv_publication(arxiv: SourceRecord, dblp: Optional[SourceRecord]) -> Tuple[str, str]:
+    if dblp and (
+        dblp.found and dblp.publication_type in {"Conference and Workshop Papers", "Journal Articles"}
+        and title_ratio(arxiv.title, dblp.title) >= 0.95
+        and arxiv.authors and any(namekey(arxiv.authors[0]) == namekey(author) for author in dblp.authors)
+    ):
+        return "record", f"DBLP · {dblp.venue} {dblp.year or ''}".strip()
+    if arxiv.venue.strip().lower() not in {"", "arxiv", "corr"}:
+        return "reference", arxiv.venue
+    comment_match = re.search(r"\bcomment:\s*(.+)", arxiv.note or "", re.I)
+    if comment_match:
+        comment = comment_match.group(1)
+        positive = re.search(
+            r"\b(?:accepted (?:at|by|for|in|to)|published (?:at|by|in)|to appear (?:in|at))\b", comment, re.I,
+        )
+        negative = re.search(r"\b(?:not|never|if|once|when|whether)\b[^.;]{0,30}\b(?:accepted|published)\b",
+                             comment, re.I)
+        other_subject = re.search(
+            r"\b(?:code|data|dataset|software|repository|supplement)\b[^.;]{0,20}\bpublished\b", comment, re.I,
+        )
+        if positive and not negative and not other_subject:
+            return "comment", comment[:240]
+    return ("unavailable" if dblp and dblp.error else "not_found"), ""
+
+
 def verify_entry(net: Net, entry: Entry) -> CheckResult:
     fields = entry.fields
     bib_title = fields.get("title", "")
@@ -309,40 +335,28 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
             else:
                 search_errored = search_errored or dblp.error
 
-    # arXiv acceptance check: an arXiv-only entry gets one DBLP probe to see
-    # whether a formally published version exists (non-CoRR record).
-    if (
-        "arXiv" in records
-        and bib_title
-        and not any(k in records for k in ("Crossref", "DBLP", "OpenReview"))
-    ):
-        parsed = [b for b in parse_bib_authors(bib_authors) if not b.get("etal")]
-        first_author = parsed[0]["surname"] if parsed else None
-        dblp = dblp_search(net, bib_title, first_author=first_author)
-        evidence.append(dblp)
-        if dblp.found:
-            if (dblp.venue or "").upper() != "CORR":
-                records["DBLP"] = dblp
-                add(INFO, (
-                    f"arXiv preprint has a published version on DBLP: "
-                    f"“{delatex(dblp.title)}” — {dblp.venue or '?'} {dblp.year or ''}".strip()
-                ))
-            else:
-                add(INFO, "DBLP indexes only the CoRR preprint — no formal publication found yet")
-        elif dblp.error:
-            search_errored = True
-
     arxiv_rec = records.get("arXiv")
-    if arxiv_rec is not None:
-        if arxiv_rec.venue and arxiv_rec.venue != "arXiv":
-            add(INFO, f"arXiv journal reference: {arxiv_rec.venue} (accepted / published)")
-        else:
-            m = re.search(r"comment:\s*(.+)", arxiv_rec.note or "")
-            if m and re.search(
-                r"accept|to appear|appear(?:s)? at|camera[- ]ready|published",
-                m.group(1), re.I,
-            ):
-                add(INFO, "arXiv comment suggests acceptance: " + m.group(1)[:140])
+    publication = None
+    if arxiv_id:
+        publication = ("unavailable", "")
+        if arxiv_rec is not None and (
+            not bib_title or title_ratio(bib_title, arxiv_rec.title) >= 0.88
+        ):
+            publication = _arxiv_publication(arxiv_rec, None)
+            if publication[0] not in ("record", "reference") and arxiv_rec.title:
+                dblp = dblp_search(net, arxiv_rec.title, first_author=next(iter(arxiv_rec.authors), None))
+                evidence.append(dblp)
+                publication = _arxiv_publication(arxiv_rec, dblp)
+                search_errored = search_errored or dblp.error
+            sources = {
+                "record": "Publication indexed by DBLP",
+                "reference": "arXiv publication reference",
+                "comment": "Author comment suggests acceptance or publication",
+                "not_found": "No acceptance or publication evidence found",
+                "unavailable": "Could not check acceptance or publication",
+            }
+            status, explanation = publication
+            add(INFO, sources[status] + (f": {explanation}" if explanation else ""))
 
     title_ref = (
         records.get("arXiv") or records.get("Crossref")
@@ -440,6 +454,7 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
         reference=title_ref,
         author_diff=author_diff,
         any_error=any_error,
+        publication=publication,
     )
 
 
