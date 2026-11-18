@@ -30,6 +30,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -648,8 +649,31 @@ def gui_cmd(
         err_console.print(f"[red]GUI dependencies missing:[/] {exc}")
         err_console.print("[dim]Install them with: pip install nicegui[/]")
         raise typer.Exit(2) from exc
-    console.print(f"[bold cyan]hx-bib GUI[/] → http://{host}:{port}")
+    _print_gui_banner(host, port, show)
     run_gui(host=host, port=port, show=show)
+
+
+def _print_gui_banner(host: str, port: int, show: bool) -> None:
+    bind_host = host.strip("[]")
+    browser_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(bind_host, bind_host)
+    address = f"[{browser_host}]" if ":" in browser_host else browser_host
+    url = f"http://{address}:{port}"
+    if not console.is_terminal:
+        console.print(Text(f"hx-bib v{__version__} | Web workspace | {url}"))
+        return
+    details = Table.grid(padding=(0, 2))
+    details.add_column(style="dim", no_wrap=True)
+    details.add_column()
+    details.add_row("Workspace", "BibTeX / LaTeX Tables")
+    details.add_row("Address", Text(url, style=Style(color="cyan", underline=True, link=url)))
+    if browser_host != bind_host:
+        details.add_row("Listening", Text(f"{host} (all interfaces)"))
+    details.add_row("Browser", "Opens automatically" if show else "Open the address above")
+    details.add_row("Stop", Text("Ctrl+C", style="bold"))
+    console.print(Panel(
+        details, title=f"[bold]hx-bib[/] [dim]v{__version__}[/]", title_align="left",
+        box=box.ROUNDED, border_style="blue", padding=(1, 2), expand=False,
+    ))
 
 
 def main() -> None:

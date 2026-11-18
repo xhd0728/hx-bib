@@ -1055,7 +1055,10 @@ def _build_page(initial_mode: str) -> None:
 
 def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True) -> None:
     register_pages()
-    ui.run(host=host, port=port, show=show, title="hx-bib", favicon="📚", reload=False)
+    ui.run(
+        host=host, port=port, show=show, title="hx-bib", favicon="📚",
+        reload=False, show_welcome_message=False,
+    )
 
 
 # ---------------------------------------------------------------------------
