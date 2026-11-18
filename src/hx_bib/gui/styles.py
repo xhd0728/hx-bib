@@ -288,6 +288,9 @@ html, body { height:100%; overflow:hidden; }
                        border-radius:8px; margin-top:6px; overflow-wrap:anywhere; }
 .hx-publication-link { display:inline-block; margin-inline-start:10px; color:var(--hx-brand-ink);
                        font-weight:600; text-decoration:underline; }
+.hx-publication-attempts { color:var(--hx-muted); font-size:13px; margin-top:4px; }
+.hx-publication-attempts summary { cursor:pointer; }
+.hx-publication-attempts ul { padding-inline-start:20px; }
 .hx-compact-upload .q-uploader__header-content { padding:6px 10px; min-height:38px; }
 .hx-compact-upload .q-uploader__title { font-size:13px; }
 .hx-workbench-grid { display:grid; grid-template-columns:minmax(255px,290px) minmax(0,1fr);

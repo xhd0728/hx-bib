@@ -236,7 +236,7 @@ async def main() -> None:
         from hx_bib.gui import app as gui_app
         from hx_bib.verify.checker import CheckResult
 
-        saved = gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries
+        saved = gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries, gui_app.verify_arxiv_entry
         state = gui_app._new_state()
         state["drafts"]["verify_keys"] = "missing-citekey"
         started, release = threading.Event(), threading.Event()
@@ -327,9 +327,43 @@ async def main() -> None:
             await user.should_see(marker="arxiv-result")
             assert state["verify_results"] is None
             print("✓ independent arXiv run survives Apply and annotates the right entry")
+
+            state = saved[0]()
+            gui_app.verify_entries = saved[2]
+            calls = {"ready": 0, "unavailable": 0}
+
+            def check_paper(_net, entry):
+                calls[entry.key] += 1
+                if entry.key == "unavailable" and calls[entry.key] <= 6:
+                    raise TimeoutError("OpenReview timed out")
+                return CheckResult(entry, "OK", arxiv_id=gui_app.extract_arxiv_id(entry),
+                                   publication=("accepted", "OpenReview · Example Conference"))
+
+            gui_app.verify_arxiv_entry = check_paper
+            await user.open("/")
+            user.find(marker="paste-input").type(
+                "@article{ready, eprint={2401.01234}}\n@article{unavailable, eprint={2401.01235}}"
+            )
+            user.find(marker="paste-load").click()
+            await user.should_see(marker="action-arxiv")
+            user.find(marker="action-arxiv").click()
+            await user.should_see("核查结束 · 共 2 条，其中 1 条仍待核实", retries=20)
+            await user.should_see("累计尝试 3 次")
+            assert calls == {"ready": 1, "unavailable": 3}
+
+            user.find(marker="arxiv-retry-entry").click()
+            await user.should_see("累计尝试 6 次", retries=20)
+            assert calls == {"ready": 1, "unavailable": 6}
+            user.find(marker="arxiv-retry-failed").click()
+            await user.should_see("累计尝试 7 次", retries=20)
+            await user.should_not_see(marker="arxiv-retry-entry")
+            await user.should_not_see(marker="arxiv-retry-failed")
+            assert calls == {"ready": 1, "unavailable": 7}
+            assert [result.attempts for result in state["arxiv_results"]] == [1, 7]
+            print("✓ arXiv retries only failed entries and preserves their attempt history after recovery")
         finally:
             release.set()
-            gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries = saved
+            gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries, gui_app.verify_arxiv_entry = saved
 
     print("\nAll GUI smoke checks passed.")
 

@@ -7,6 +7,7 @@ import difflib
 import html
 import inspect
 import json
+import logging
 import os
 import re
 from collections import Counter
@@ -44,6 +45,7 @@ from ..core.venues import (
     search_venues,
 )
 from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entries
+from ..verify.checker import merge_attempts, verify_arxiv_entry
 from ..verify.report import build_html as build_verify_html
 from .bib_workbench import (
     BibComparison,
@@ -73,6 +75,7 @@ from .workspace import (
 )
 
 SEVERITY_COLOR = {"error": "#dc2626", "warning": "#d97706", "info": "#2563eb"}
+logger = logging.getLogger(__name__)
 VERDICT_COLOR = {
     "FAIL": "#b91c1c", "WARN": "#92400e", "MINOR": "#854d0e",
     "INFO": "#1d4ed8", "OK": "#166534",
@@ -505,11 +508,24 @@ def _arxiv_publication_item(result, lang: str) -> str:
         if target and target.scheme in {"http", "https"} and target.hostname:
             link = (f'<a class="hx-publication-link" href="{_esc(result.publication_url)}" '
                     f'target="_blank" rel="noopener noreferrer">{_esc(t(lang, "arxiv_source_link"))}</a>')
+    failures = "".join(
+        f'<li>{_esc(t(lang, "arxiv_attempt_error").format(n=number, detail=detail))}</li>'
+        for number, detail in result.attempt_errors
+    )
+    history = (
+        '<details class="hx-publication-attempts">'
+        f'<summary>{_esc(t(lang, "arxiv_attempt_log"))}</summary><ul>{failures}</ul></details>'
+        if failures else ""
+    )
+    attempts = (
+        f'<div class="hx-tab-note">{_esc(t(lang, "arxiv_attempts").format(n=result.attempts))}</div>'
+        if result.attempts > 1 or result.any_error else ""
+    )
     return (
         '<div class="hx-publication-item">'
-        f'<code>{_esc(result.entry.key)}</code> · arXiv:{_esc(result.arxiv_id)}'
+        f'arXiv:{_esc(result.arxiv_id)}'
         f'<div><strong>{_esc(t(lang, "arxiv_status_" + status))}</strong>'
-        f'{(" · " + _esc(evidence)) if evidence else ""}{link}</div></div>'
+        f'{(" · " + _esc(evidence)) if evidence else ""}{link}</div>{attempts}{history}</div>'
     )
 
 
@@ -1292,6 +1308,15 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
 # Panels
 # ---------------------------------------------------------------------------
 def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
+    arxiv_ids = {extract_arxiv_id(entry) for entry in doc.entries}
+
+    async def retry_arxiv(only: Optional[str] = None) -> None:
+        ids = _failed_arxiv_ids(state) & arxiv_ids
+        if only is not None:
+            ids &= {only}
+        if ids:
+            await _verify_bib(state, lang, "arxiv", sync_online, retry_ids=ids)
+
     with ui.card().classes("hx-card hx-workbench hx-bib-workbench w-full"):
         _render_status_bar(state, lang, doc, refresh_body)
         with ui.element("div").classes("hx-workbench-grid w-full"):
@@ -1318,6 +1343,9 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
                     arxiv = ui.button(t(lang, "arxiv_publication_action"), icon="school").props(
                         "outline no-caps",
                     ).classes("w-full").mark("action-arxiv")
+                    retry = ui.button(icon="refresh", on_click=lambda: retry_arxiv()).props(
+                        "flat dense no-caps",
+                    ).classes("w-full").mark("arxiv-retry-failed")
                     status = ui.label("").classes("hx-tab-note").props("role=status").mark("verify-status")
                     with ui.row().classes("w-full gap-1") as run_controls:
                         pause = ui.button(t(lang, "pause"), icon="pause").props(
@@ -1327,7 +1355,7 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
                             "flat dense no-caps color=red-7",
                         ).mark("verify-stop")
             with ui.element("section").classes("hx-workbench-output hx-bib-results"):
-                render_results = _bib_results(state, lang)
+                render_results = _bib_results(state, lang, retry_arxiv)
 
         async def run_apply() -> None:
             _busy(apply, True)
@@ -1356,13 +1384,17 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
             snapshot = (scope, done, total, paused, stopping, outcome, control, *(id(report) for report in reports))
             if snapshot == last:
                 return
-            if last is not None and snapshot[-2:] != last[-2:]:
+            if last is not None and (snapshot[-2:] != last[-2:] or control is not last[-3]):
                 render_results.refresh()
             last = snapshot
             for button, kind in ((verify, "all"), (arxiv, "arxiv")):
                 button.set_enabled(control is None)
                 _busy(button, control is not None and scope == kind)
             download.set_enabled(any(reports))
+            failed = len(_failed_arxiv_ids(state) & arxiv_ids)
+            retry.set_visibility(bool(failed))
+            retry.set_enabled(control is None)
+            retry.set_text(t(lang, "arxiv_retry_failed").format(n=failed))
             run_controls.set_visibility(control is not None)
             pause.set_enabled(not stopping)
             stop.set_enabled(not stopping)
@@ -1377,7 +1409,9 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
             elif outcome == "stopped":
                 status.set_text(t(lang, "stopped_partial").format(n=done))
             elif scope:
-                status.set_text(t(lang, "verify_done").format(n=done))
+                key = "arxiv_done_incomplete" if scope == "arxiv" and failed else "verify_done"
+                checked = len(state["arxiv_results"] or []) if scope == "arxiv" else done
+                status.set_text(t(lang, key).format(n=checked, failed=failed))
 
         async def run_online(scope: str) -> None:
             await _verify_bib(state, lang, scope, sync_online)
@@ -1399,7 +1433,8 @@ def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
                 sync_online()
 
         def download_report() -> None:
-            results = state["verify_results"] or state["arxiv_results"]
+            preferred = "arxiv_results" if state["progress"].get("scope") == "arxiv" else "verify_results"
+            results = state[preferred] or state["verify_results"] or state["arxiv_results"]
             if results:
                 ui.download(build_verify_html(results, state["name"]).encode("utf-8"),
                             f"{Path(state['name']).stem}.report.html")
@@ -1529,13 +1564,21 @@ async def _apply_bib_options(state: dict, lang: str) -> bool:
     return True
 
 
-async def _verify_bib(state: dict, lang: str, scope: str, sync_view) -> None:
+def _failed_arxiv_ids(state: dict) -> set[str]:
+    return {result.arxiv_id for result in state["arxiv_results"] or [] if result.any_error and result.arxiv_id}
+
+
+async def _verify_bib(state: dict, lang: str, scope: str, sync_view, *, retry_ids: Optional[set[str]] = None) -> None:
     if state["run_control"] is not None:
         return
     before, revision = state["text"], state["revision"]
     entries = parse_bibtex(before).entries
     if scope == "arxiv":
-        entries = [entry for entry in entries if extract_arxiv_id(entry)]
+        unique = {}
+        for entry in entries:
+            if (arxiv_id := extract_arxiv_id(entry)) and (retry_ids is None or arxiv_id in retry_ids):
+                unique.setdefault(arxiv_id, entry)
+        entries = list(unique.values())
     else:
         keys = set((state["drafts"].get("verify_keys") or "").replace(",", " ").split())
         if missing := keys - {entry.key for entry in entries}:
@@ -1560,10 +1603,16 @@ async def _verify_bib(state: dict, lang: str, scope: str, sync_view) -> None:
                 progress.update(done=done, total=total)
 
     def work() -> list:
-        net = Net(delay=settings["delay"], use_cache=settings["use_cache"])
+        net = Net(delay=settings["delay"], use_cache=settings["use_cache"] and retry_ids is None)
         if not control.wait_if_paused():
             return []
-        prefetch_arxiv(net, entries)
+        try:
+            prefetch_arxiv(net, entries)
+        except Exception:  # noqa: BLE001 - individual lookups still work
+            logger.exception("Could not prefetch arXiv records")
+        if scope == "arxiv":
+            return verify_entries(net, entries, progress=update_progress, workers=settings["workers"],
+                                  control=control, check=verify_arxiv_entry, retries=2)
         results = verify_entries(net, entries, progress=update_progress, workers=settings["workers"], control=control)
         if not control.cancelled.is_set() and any(r.any_error and r.verdict != "OK" for r in results):
             results = retry_failed(net, results, control=control)
@@ -1574,6 +1623,7 @@ async def _verify_bib(state: dict, lang: str, scope: str, sync_view) -> None:
         outcome = "stopped" if control.cancelled.is_set() else "completed"
     except Exception as exc:
         results, outcome = None, "failed"
+        logger.exception("Verification batch failed (%s)", scope)
         if state["run_control"] is control:
             ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
     if state["run_control"] is not control:
@@ -1581,11 +1631,15 @@ async def _verify_bib(state: dict, lang: str, scope: str, sync_view) -> None:
     state["run_control"] = None
     progress.update(running=False, paused=False, outcome=outcome, done=len(results or []))
     if results is not None and (scope == "arxiv" or preview_is_current(state, revision, before)):
+        if scope == "arxiv" and retry_ids is not None:
+            updated = {result.arxiv_id: result for result in results}
+            results = [merge_attempts(old, updated[old.arxiv_id]) if old.arxiv_id in updated else old
+                       for old in state["arxiv_results"] or []]
         state["arxiv_results" if scope == "arxiv" else "verify_results"] = results
     sync_view()
 
 
-def _bib_results(state: dict, lang: str):
+def _bib_results(state: dict, lang: str, retry_arxiv):
     before = state["diff_before"]
     after = state["text"]
     comparisons = compare_entries(after if before is None else before, after)
@@ -1632,7 +1686,8 @@ def _bib_results(state: dict, lang: str):
                 if not full and comparison.kind == "unchanged" and not (local or needs_attention or publication):
                     continue
                 visible += 1
-                _bib_diff_card(lang, comparison, index, full, local, online, publication)
+                _bib_diff_card(lang, comparison, index, full, local, online, publication,
+                               retry_arxiv if state["run_control"] is None else None)
             if not visible and not (report and report.issues):
                 message = "bib_diff_ready" if before is None else "no_changes"
                 with ui.column().classes("hx-bib-diff-empty w-full items-center gap-2"):
@@ -1649,7 +1704,8 @@ def _bib_results(state: dict, lang: str):
     return render
 
 
-def _bib_diff_card(lang: str, comparison: BibComparison, index: int, full: bool, issues, online, publication) -> None:
+def _bib_diff_card(lang: str, comparison: BibComparison, index: int, full: bool, issues, online, publication,
+                   retry_arxiv) -> None:
     entry = comparison.after or comparison.before
     with ui.element("article").classes("hx-bib-diff-card w-full").mark("bib-diff-entry"):
         with ui.row().classes("hx-bib-diff-heading w-full items-center gap-2"):
@@ -1681,6 +1737,13 @@ def _bib_diff_card(lang: str, comparison: BibComparison, index: int, full: bool,
                     ui.html(check_html(ValidationReport(issues), lang)).classes("w-full")
                 if publication:
                     ui.html(_arxiv_publication_item(publication, lang)).classes("w-full").mark("arxiv-result")
+                    if publication.any_error:
+                        async def retry_one() -> None:
+                            await retry_arxiv(publication.arxiv_id)
+
+                        ui.button(t(lang, "arxiv_retry_entry"), icon="refresh", on_click=retry_one).props(
+                            "flat dense no-caps",
+                        ).mark("arxiv-retry-entry").set_enabled(retry_arxiv is not None)
                 if online:
                     ui.html(verify_html([online], "ALL", lang)).classes("w-full")
 
