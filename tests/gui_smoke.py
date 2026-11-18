@@ -32,6 +32,16 @@ async def settle(seconds: float = 0.25) -> None:
     await asyncio.sleep(seconds)
 
 
+async def choose_tool(user, key):
+    user.find(marker="more-tools").click()
+    await user.should_see(marker=f"action-{key}")
+    user.find(marker=f"action-{key}").click()
+
+
+def open_section(user, marker):
+    next(iter(user.find(marker=marker).elements)).open()
+
+
 async def main() -> None:
     async with user_simulation(main_file=MAIN) as user:
         await user.open("/")
@@ -51,30 +61,26 @@ async def main() -> None:
         await user.should_see(marker="browse-venues")
         print("✓ venues browser opens without a file")
 
-        user.find(marker="import-path").click()
+        open_section(user, "import-path")
         user.find(marker="path-input").type(str(SAMPLE))
         user.find(marker="load-btn").click()
         await settle()
         await user.should_see("custom.bib")
         await user.should_see("工作副本")
-        await user.should_see("格式化")
+        await user.should_see(marker="action-format")
         print("✓ file loaded from path (status bar shows working copy)")
 
-        user.find(marker="tab-format").click()
-        user.find(marker="format-preview").click()
+        user.find(marker="action-format").click()
         await settle()
-        await user.should_see("逐项对照")
         await user.should_see("应用到工作副本")
-        print("✓ format preview (itemized view) rendered")
-
-        user.find(marker="view-mode").trigger("update:model-value", 1)
-        await settle()
-        await user.should_see("按条目分组")
-        user.find(marker="view-mode").trigger("update:model-value", 2)
-        await settle()
-        await user.should_see("每条结果独立成卡")
-        user.find(marker="view-mode").trigger("update:model-value", 0)
-        print("✓ all three preview views switch correctly")
+        await user.should_see(marker="bib-copy-before")
+        await user.should_see(marker="bib-copy-after")
+        assert not next(iter(user.find(marker="bib-advanced").elements)).value
+        assert not next(iter(user.find(marker="bib-details").elements)).value
+        open_section(user, "bib-details")
+        await user.should_see(marker="bib-item-copy-before")
+        await user.should_see(marker="bib-item-copy-after")
+        print("✓ formatting provides a split preview and per-entry copies")
 
         # Mode changes preserve the preview instead of rebuilding it empty.
         nav_widget = next(iter(user.find(marker="nav-table").elements))
@@ -86,11 +92,12 @@ async def main() -> None:
         await user.should_see(marker="apply-btn")
         print("✓ preview survives tool mode changes")
 
+        open_section(user, "bib-advanced")
         user.find("等号对齐").click()
         await settle()
         await user.should_see("选项已变化")
         assert not next(iter(user.find(marker="apply-btn").elements)).enabled
-        user.find(marker="format-preview").click()
+        user.find(marker="action-format").click()
         await settle()
         assert next(iter(user.find(marker="apply-btn").elements)).enabled
         print("✓ changed options invalidate Apply until the preview is regenerated")
@@ -109,7 +116,7 @@ async def main() -> None:
         await user.should_see("已暂存 ")
         print("✓ redo works")
 
-        user.find(marker="tab-clean").click()
+        await choose_tool(user, "clean")
         await settle()
         user.find("自定义删除（逗号分隔）").type("abstract")
         user.find(marker="nav-table").click()
@@ -122,52 +129,47 @@ async def main() -> None:
         await user.should_see("逐项对照")
         print("✓ clean tab works")
 
-        user.find(marker="tab-normalize").click()
+        await choose_tool(user, "normalize")
         await settle()
         user.find(marker="normalize-preview").click()
         await settle()
         await user.should_see("逐项对照")
         print("✓ normalize tab works")
 
-        user.find(marker="tab-check").click()
-        await settle()
-        await user.should_see("接下来怎么处理")
-        await user.should_see("查看 BibTeX 中需要处理的问题")
-        assert not next(iter(user.find(marker="check-show-results").elements)).enabled
-        user.find(marker="run-check").click()
-        await settle()
+        user.find(marker="action-check").click()
+        await user.should_see(marker="check-download", retries=20)
+        assert not next(iter(user.find(marker="check-details").elements)).value
+        open_section(user, "check-details")
         await user.should_see("格式校验")
         await user.should_see(marker="check-filter")
         await user.should_see(marker="check-download")
-        assert next(iter(user.find(marker="check-show-results").elements)).enabled
         user.find(marker="check-filter").trigger("update:model-value", 1)
         await settle()
+        open_section(user, "bib-advanced")
         user.find(marker="check-option-check_venues").click()
         await settle()
         await user.should_see("检查项已变化")
         assert not next(iter(user.find(marker="check-download").elements)).enabled
-        user.find(marker="run-check").click()
+        user.find(marker="action-check").click()
         await settle()
         assert next(iter(user.find(marker="check-download").elements)).enabled
+        open_section(user, "check-details")
         user.find(marker="check-goto-clean").click()
         await settle()
         await user.should_see(marker="clean-preview")
-        user.find(marker="tab-check").click()
+        user.find(marker="action-check").click()
         await settle()
+        open_section(user, "check-details")
         await user.should_see(marker="check-filter")
+        open_section(user, "bib-advanced")
         assert not next(iter(user.find(marker="check-option-check_venues").elements)).value
         print("✓ validation options, filters, stale report protection and repair shortcuts work")
 
-        user.find(marker="tab-verify").click()
-        await settle()
-        await user.should_see("并发线程数")
-        await user.should_see("开始核查")
-        print("✓ verify tab shows workers / pause controls")
-
-        user.find(marker="tab-venues").click()
+        await choose_tool(user, "venues")
         await settle()
         await user.should_see("个预设")
         query = next(iter(user.find(marker="venue-search").elements))
+        open_section(user, "venue-filters")
         family = next(iter(user.find(marker="venue-family").elements))
         kind = next(iter(user.find(marker="venue-kind").elements))
         query.set_value("Big Data")
@@ -181,14 +183,13 @@ async def main() -> None:
         await user.should_see(marker="venue-ACL-full")
         assert next(iter(user.find(marker="venue-search").elements)) is query
         query.set_value("EMNLP")
-        user.find(marker="tab-check").click()
+        user.find(marker="action-check").click()
         await settle()
-        user.find(marker="tab-venues").click()
+        await choose_tool(user, "venues")
         await user.should_see(marker="venue-EMNLP-full")
         await user.should_not_see(marker="venue-ACL-full")
 
-        next(iter(user.find(marker="venue-view").elements)).set_value("preview")
-        await user.should_see("规范化工作副本")
+        open_section(user, "bib-advanced")
         style = next(iter(user.find(marker="venue-norm-style").elements))
         style.set_value("full")
         user.find(marker="venue-normalize-preview").click()
@@ -206,15 +207,14 @@ async def main() -> None:
         print("✓ venue search, filters, persisted catalog and preview/apply/undo")
 
         user.find("中 / EN").click()
-        await user.should_see("Format")
-        await user.should_see("Verify")
+        await user.should_see("Preview formatting")
+        await user.should_see("Verify online")
         await user.should_see("Working copy")
         print("✓ language toggle works (zh → en)")
 
         # Fresh page: paste a .bib text directly (no file involved).
         await user.open("/")
         await user.should_see("上传 BibTeX 文件")
-        user.find(marker="import-paste").click()
         user.find(marker="paste-input").type("not a bibliography")
         user.find(marker="paste-load").click()
         await settle()
@@ -237,11 +237,13 @@ async def main() -> None:
         user.find(marker="table-example").click()
         await settle()
         user.find(marker="table-format").click()
-        await user.should_see("个表格", retries=20)
-        await user.should_see("格式化结果")
-        view = next(iter(user.find(marker="table-view").elements))
-        view.set_value("compare")
-        await user.should_see("修改前")
+        await user.should_see(marker="table-details", retries=20)
+        await user.should_see(marker="table-copy-before")
+        assert not next(iter(user.find(marker="table-advanced").elements)).value
+        assert not next(iter(user.find(marker="table-details").elements)).value
+        open_section(user, "table-details")
+        await user.should_see(marker="table-item-copy-before")
+        await user.should_see(marker="table-item-copy-after")
         print("✓ table formatter: example loads, formats and compares")
 
         # Formatting only refreshes output: textarea widget and focus survive.
@@ -271,19 +273,17 @@ async def main() -> None:
         user.find(marker="nav-tools").click()
         await user.should_see("上传 BibTeX 文件")
         user.find(marker="bib-example").click()
-        await user.should_see(marker="tab-check")
-        user.find(marker="tab-check").click()
-        await user.should_see(marker="run-check")
-        user.find(marker="run-check").click()
-        await user.should_see(marker="check-filter", retries=20)
+        await user.should_see(marker="action-check")
+        user.find(marker="action-check").click()
+        await user.should_see(marker="check-download", retries=20)
         user.find(marker="nav-table").click()
         await user.should_see("LaTeX 表格格式化")
         assert next(iter(user.find(marker="table-input").elements)) is input_widget
-        assert input_widget.value == pasted_table and view.value == "compare"
+        assert input_widget.value == pasted_table
         assert next(iter(user.find(marker="table-compare").elements)) is result_widget
         assert next(iter(user.find(marker="table-download").elements)).enabled
         user.find(marker="nav-tools").click()
-        await user.should_see(marker="check-filter")
+        await user.should_see(marker="check-download")
         user.find(marker="nav-table").click()
         await user.should_see(marker="table-input")
         print("✓ both workspaces keep their input, options, report and active view")
@@ -314,11 +314,11 @@ async def main() -> None:
         await user.open("/")
         user.find(marker="bib-example").click()
         await settle()
-        user.find(marker="format-preview").click()
+        user.find(marker="action-format").click()
         await settle()
         user.find(marker="apply-btn").click()
         await settle()
-        user.find(marker="format-preview").click()
+        user.find(marker="action-format").click()
         await settle()
         assert not next(iter(user.find(marker="apply-btn").elements)).enabled
         print("✓ unchanged output disables Apply")
@@ -329,6 +329,7 @@ async def main() -> None:
 
         saved = gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries
         state = gui_app._new_state()
+        state["drafts"]["verify_keys"] = "missing-citekey"
         started, release = threading.Event(), threading.Event()
         requested = []
 
@@ -336,7 +337,10 @@ async def main() -> None:
             requested.append([entry.key for entry in entries])
             started.set()
             assert release.wait(5)
-            return [CheckResult(entry=entries[0], verdict="FAIL", issues=[("FAIL", "Title mismatch")])]
+            return [CheckResult(
+                entry=entries[0], verdict="FAIL", issues=[("FAIL", "Title mismatch")],
+                arxiv_id=gui_app.extract_arxiv_id(entries[0]), publication=("not_found", ""),
+            )]
 
         gui_app._new_state = lambda: state
         gui_app.prefetch_arxiv = lambda *args: None
@@ -345,19 +349,18 @@ async def main() -> None:
             await user.open("/")
             user.find(marker="bib-example").click()
             await settle()
-            user.find(marker="tab-verify").click()
+            user.find(marker="action-verify").click()
             await settle()
-            await user.should_see("尚未开始核查")
+            await user.should_see("以下引用 key 不存在：missing-citekey")
+            open_section(user, "bib-advanced")
+            await user.should_see("并发线程数")
             assert not next(iter(user.find(marker="verify-download").elements)).enabled
             keys = user.find(marker="verify-keys")
-            keys.type("missing-citekey")
-            user.find(marker="verify-start").click()
-            await user.should_see("以下引用 key 不存在：missing-citekey")
             assert not started.is_set()
             entry = gui_app.parse_bibtex(state["text"]).entries[0]
             keys.clear()
             keys.type(entry.key)
-            user.find(marker="verify-start").click()
+            user.find(marker="action-verify").click()
             assert await asyncio.to_thread(started.wait, 5)
             assert requested == [[entry.key]]
             user.find(marker="verify-pause").click()
@@ -375,33 +378,33 @@ async def main() -> None:
             user.find(marker="verify-stop").click()
             await user.should_see("正在停止")
             assert not next(iter(user.find(marker="verify-stop").elements)).enabled
-            start_button = next(iter(user.find(marker="verify-start").elements))
-            filter_widget = next(iter(user.find(marker="verify-filter").elements))
+            start_button = next(iter(user.find(marker="action-verify").elements))
             release.set()
             await user.should_see("已停止，仅显示已完成的 1 条结果", retries=20)
+            open_section(user, "verify-details")
+            filter_widget = next(iter(user.find(marker="verify-filter").elements))
             await user.should_see("Title mismatch")
             assert next(iter(user.find(marker="verify-download").elements)).enabled
-            assert next(iter(user.find(marker="verify-show-results").elements)).enabled
             filter_widget.set_value("OK")
             await user.should_see("当前筛选下没有条目")
-            assert next(iter(user.find(marker="verify-start").elements)) is start_button
+            assert next(iter(user.find(marker="action-verify").elements)) is start_button
             assert next(iter(user.find(marker="verify-filter").elements)) is filter_widget
-            user.find(marker="tab-check").click()
+            user.find(marker="action-check").click()
             await settle()
-            user.find(marker="tab-verify").click()
+            user.find(marker="action-verify").click()
+            await user.should_see(marker="verify-details")
+            open_section(user, "verify-details")
             await user.should_see("当前筛选下没有条目")
             print("✓ verification scope, pause/resume/stop, partial results and persistent filters")
 
             started.clear()
             release.clear()
-            user.find(marker="verify-start").click()
+            user.find(marker="action-verify").click()
             assert await asyncio.to_thread(started.wait, 5)
             assert not next(iter(user.find(marker="verify-download").elements)).enabled
             old_control = state["run_control"]
-            user.find(marker="tab-format").click()
-            await settle()
-            user.find(marker="format-preview").click()
-            await settle()
+            user.find(marker="action-format").click()
+            await user.should_see(marker="apply-btn", retries=20)
             user.find(marker="apply-btn").click()
             await settle()
             assert old_control.cancelled.is_set()
@@ -409,6 +412,21 @@ async def main() -> None:
             await settle(0.5)
             assert state["verify_results"] is None and not state["progress"]["running"]
             print("✓ verification controls survive mode switches; document edits cancel stale runs")
+
+            state = saved[0]()
+            await user.open("/")
+            user.find(marker="paste-input").type(
+                "@article{preprint, title={Example}, eprint={2401.01234}}\n"
+                "@article{journal, title={A journal article}}"
+            )
+            user.find(marker="paste-load").click()
+            await user.should_see(marker="more-tools")
+            started.clear()
+            await choose_tool(user, "arxiv")
+            assert await asyncio.to_thread(started.wait, 5)
+            assert requested[-1] == ["preprint"]
+            await user.should_see("未找到证据", retries=20)
+            print("✓ dedicated arXiv action checks only eprints and shows publication evidence")
         finally:
             release.set()
             gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries = saved

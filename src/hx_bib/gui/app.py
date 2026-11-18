@@ -30,13 +30,16 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import difflib
 import html
 import inspect
 import json
 import os
 import re
 from collections import Counter
+from contextlib import contextmanager
 from copy import deepcopy
+from itertools import zip_longest
 from pathlib import Path
 from threading import Lock
 from typing import Callable, List, Optional
@@ -51,6 +54,7 @@ from ..core.diff import (
     match_by_key,
     split_entries,
 )
+from ..core.identifiers import extract_arxiv_id
 from ..core.latex_table import (
     CommentLine,
     Row,
@@ -78,7 +82,7 @@ from ..core.venues import (
     render_venue,
     search_venues,
 )
-from ..core.writer import FormatOptions, render_document, render_entry
+from ..core.writer import FormatOptions, render_document
 from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entries
 from ..verify.report import build_html as build_verify_html
 from .diagnostics import issue_text
@@ -111,6 +115,7 @@ VERDICT_COLOR = {
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
 _TABLE_UPLOAD_LIMIT = 2_000_000
+_CODE_PREVIEW_LINES = 500
 
 # Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
 # button and its hidden <input type=file> have no accessible names.  Patch them
@@ -148,6 +153,11 @@ _SCROLL_RESTORE = """
   document.addEventListener('scroll', event => {
     const el = event.target;
     if (el.dataset?.hxScroll) positions.set(el.dataset.hxScroll, el.scrollTop);
+    if (el.matches?.('.hx-code')) {
+      for (const peer of el.closest('.hx-code-pair').querySelectorAll('.hx-code')) {
+        if (peer !== el && peer.scrollTop !== el.scrollTop) peer.scrollTop = el.scrollTop;
+      }
+    }
   }, true);
   window.addEventListener('hx-reset-scroll', () => positions.clear());
   const restore = () => {
@@ -660,6 +670,7 @@ def verify_html(results, verdict_filter: str, lang: str) -> str:
                 f"<div><div class='hx-tab-note'>{_esc(ad['source'])}</div>{names(ad['src'])}</div>"
                 "</div></div>"
             )
+        publication = _arxiv_publication_item(res, lang)
         blocks.append(
             f'<details class="hx-issue-card hx-verify-entry" style="border-left-color:{color}">'
             f"<summary>"
@@ -668,9 +679,21 @@ def verify_html(results, verdict_filter: str, lang: str) -> str:
             f'<span class="hx-issue-meta">@{_esc(res.entry.type)} · L{res.entry.line}</span>'
             f'<span class="material-icons hx-issue-caret" aria-hidden="true">expand_more</span>'
             f'<span class="hx-verify-entry-title">{_esc(res.entry.get("title") or "")}</span>'
-            f'</summary><div class="hx-verify-details">{issues}{diff_block}{evidence}</div></details>'
+            f'</summary><div class="hx-verify-details">{publication}{issues}{diff_block}{evidence}</div></details>'
         )
     return "".join(blocks)
+
+
+def _arxiv_publication_item(result, lang: str) -> str:
+    if not result.arxiv_id:
+        return ""
+    status, evidence = result.publication or ("unavailable", "")
+    return (
+        '<div class="hx-publication-item">'
+        f'<code>{_esc(result.entry.key)}</code> · arXiv:{_esc(result.arxiv_id)}'
+        f'<div><strong>{_esc(t(lang, "arxiv_status_" + status))}</strong>'
+        f'{(" · " + _esc(evidence)) if evidence else ""}</div></div>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -750,10 +773,11 @@ async def _run_preview_job(button, container, state: dict, lang: str,
             ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
         return
     finally:
-        _busy(button, False)
-    if not preview_is_current(state, revision, before):
-        return
-    if state["preview_jobs"].get(key) is not token:
+        current_job = state["preview_jobs"].get(key) is token
+        if current_job:
+            state["preview_jobs"].pop(key)
+            _busy(button, False)
+    if not current_job or not preview_is_current(state, revision, before):
         return
     state["previews"][key] = {
         "before": before, "result_text": result, "opts": opts, "label": label,
@@ -1005,41 +1029,7 @@ def _build_page(initial_mode: str) -> None:
                         _render_upload(state, lang, body)
                         return
 
-                    doc = parse_bibtex(state["text"])
-                    with ui.column().classes("hx-workspace w-full gap-3"):
-                        _render_status_bar(state, lang, doc, body)
-
-                        tab_defs = [
-                            ("format", t(lang, "tab_format"), "brush"),
-                            ("clean", t(lang, "tab_clean"), "cleaning_services"),
-                            ("normalize", t(lang, "tab_normalize"), "auto_fix_high"),
-                            ("check", t(lang, "tab_check"), "rule"),
-                            ("verify", t(lang, "tab_verify"), "travel_explore"),
-                            ("venues", t(lang, "tab_venues"), "stadium"),
-                        ]
-                        with ui.tabs(value=state["tab"]).classes(
-                            "hx-tabs w-full"
-                        ).props(
-                            "align=left inline-label no-caps id=hx-tabs-bar"
-                        ) as tabs:
-                            for key, label, icon in tab_defs:
-                                ui.tab(key, label, icon=icon).mark(f"tab-{key}")
-
-                        @ui.refreshable
-                        def active_panel() -> None:
-                            key = state["tab"]
-                            with ui.element("section").classes("hx-panel-scroll w-full").props(
-                                f'data-hx-scroll="panel-{key}" role=tabpanel '
-                                f'aria-label="{t(lang, "tab_" + key)}"'
-                            ):
-                                _build_panel(key, state, lang, doc, body)
-
-                        def select_tab(e) -> None:
-                            state["tab"] = e.value
-                            active_panel.refresh()
-
-                        tabs.on_value_change(select_tab)
-                        active_panel()
+                    _render_bib_workbench(state, lang, parse_bibtex(state["text"]), body)
 
             @ui.refreshable
             def table_body() -> None:
@@ -1082,46 +1072,32 @@ def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "
 
 
 def _render_upload(state: dict, lang: str, body) -> None:
-    # ---- hero ----
-    with ui.column().classes("w-full items-center gap-1 pt-8 pb-1"):
-        ui.html(
-            '<span class="hx-hero-badge"><span class="material-icons" '
-            'style="font-size:14px;">lock</span> '
-            f"{_esc(t(lang, 'hero_badge'))}</span>"
-        )
-        ui.label(t(lang, "upload_title")).classes("hx-hero-title")
-        ui.label(t(lang, "upload_hint")).classes("hx-hero-sub")
-        ui.html(_flow_html(lang, ["flow_load", "flow_operate", "flow_export"]))
-
-    with ui.card().classes("hx-card hx-import w-full max-w-3xl mx-auto p-6 gap-4 mt-4"):
-        with ui.tabs(value=state["drafts"].get("import_method", "file")).classes("w-full hx-import-tabs").props("align=justify no-caps inline-label") as methods:
-            for key, icon in (("file", "upload_file"), ("paste", "content_paste"), ("path", "folder_open")):
-                ui.tab(key, t(lang, "import_" + key), icon=icon).mark("import-" + key)
-        methods.on_value_change(lambda e: state["drafts"].update(import_method=e.value))
-        with ui.tab_panels(methods, value=methods.value, animated=False).classes("hx-import-panels w-full bg-transparent"):
-            with ui.tab_panel("file").classes("p-0 gap-4"):
+    with ui.card().classes("hx-card hx-workbench hx-import-workbench w-full"):
+        _panel_head("description", t(lang, "upload_title"), t(lang, "import_safe"))
+        with ui.element("div").classes("hx-workbench-grid w-full"):
+            with ui.element("aside").classes("hx-workbench-rail"):
                 async def on_upload(e: events.UploadEventArguments) -> None:
                     data = e.file.read()
                     if inspect.isawaitable(data):
                         data = await data
-                    _load_text(state, body, lang, _read_file_bytes(data),
-                               e.file.name or "uploaded.bib")
+                    _load_text(state, body, lang, _read_file_bytes(data), e.file.name or "uploaded.bib")
 
                 ui.upload(
-                    label=t(lang, "upload_button"),
-                    on_upload=on_upload,
-                on_rejected=lambda: ui.notify(t(lang, "upload_rejected"), type="warning"),
-                    auto_upload=True,
-                    max_file_size=20_000_000,
-                ).props('accept=".bib,.bibtex,text/plain"').classes("hx-uploader")
-                ui.label(t(lang, "import_file_hint")).classes("hx-tab-note")
-            with ui.tab_panel("path").classes("p-0 gap-4"):
-                ui.label(t(lang, "import_path_hint")).classes("hx-tab-note")
-                with ui.row().classes("w-full items-stretch gap-2 no-wrap"):
-                    path_input = ui.input(placeholder=t(lang, "path_placeholder")).classes(
-                        "flex-1"
-                    ).props(f"outlined aria-label='{t(lang, 'or_path')}'").mark("path-input")
-                    _draft(path_input, state, "import_path")
+                    label=t(lang, "upload_button"), on_upload=on_upload,
+                    on_rejected=lambda: ui.notify(t(lang, "upload_rejected"), type="warning"),
+                    auto_upload=True, max_file_size=20_000_000,
+                ).props('accept=".bib,.bibtex,text/plain" flat').classes("hx-uploader hx-compact-upload")
+                ui.button(t(lang, "try_example"), icon="science", on_click=lambda: _load_text(
+                    state, body, lang, BIB_EXAMPLE, "example.bib",
+                )).props("outline color=primary no-caps").mark("bib-example")
+
+                with ui.expansion(t(lang, "import_path"), icon="folder_open").classes(
+                    "hx-workbench-disclosure w-full"
+                ).mark("import-path"):
+                    ui.label(t(lang, "import_path_hint")).classes("hx-tab-note")
+                    path_input = _draft(ui.input(placeholder=t(lang, "path_placeholder")).props(
+                        f'aria-label="{t(lang, "or_path")}"'
+                    ).classes("w-full").mark("path-input"), state, "import_path")
 
                     def load_path() -> None:
                         raw = (path_input.value or "").strip().strip('"')
@@ -1129,73 +1105,41 @@ def _render_upload(state: dict, lang: str, body) -> None:
                             ui.notify(t(lang, "or_path"), type="warning", position="bottom-right")
                             return
                         try:
-                            text = _read_file_bytes(Path(raw).expanduser().read_bytes())
+                            path = Path(raw).expanduser()
+                            text = _read_file_bytes(path.read_bytes())
                         except OSError as exc:
                             ui.notify(str(exc), type="negative", position="bottom-right")
                             return
-                        _load_text(state, body, lang, text, Path(raw).name,
-                                   str(Path(raw).expanduser()))
+                        _load_text(state, body, lang, text, path.name, str(path))
 
-                    ui.button(t(lang, "load"), icon="folder_open",
-                              on_click=load_path).props(
+                    ui.button(t(lang, "load"), icon="folder_open", on_click=load_path).props(
                         "outline color=primary no-caps"
                     ).mark("load-btn")
                     path_input.on("keydown.enter", load_path)
-            with ui.tab_panel("paste").classes("p-0"):
-                with ui.column().classes("w-full gap-2"):
-                    ui.label(t(lang, "paste_title")).classes("text-sm font-semibold").style(
-                        "color:#1e293b"
-                    )
-                    paste_area = ui.textarea(
-                        placeholder=t(lang, "paste_placeholder")
-                    ).classes("w-full").props(
-                        f"outlined rows=5 aria-label='{t(lang, 'paste_placeholder')}'"
-                    ).style("font-family:ui-monospace,monospace;font-size:12.5px").mark(
-                        "paste-input"
-                    )
-                    _draft(paste_area, state, "import_text")
 
-                    def import_paste() -> None:
-                        raw = (paste_area.value or "").strip()
-                        if not raw:
-                            ui.notify(t(lang, "paste_empty"), type="warning", position="bottom-right")
-                            return
-                        _load_text(state, body, lang, raw + "\n", "pasted.bib")
+                ui.button(t(lang, "browse_venues"), icon="stadium", on_click=lambda: (
+                    state.update(venues_only=True), body.refresh(),
+                )).props("flat color=primary no-caps").mark("browse-venues")
 
-                    with ui.row().classes("w-full justify-end"):
-                        ui.button(t(lang, "paste_import"), icon="input",
-                                  on_click=import_paste).props(
-                            "unelevated color=primary no-caps"
-                        ).mark("paste-load")
-        with ui.row().classes("w-full items-center justify-between gap-2"):
-            ui.label(t(lang, "import_safe")).classes("hx-tab-note")
-            ui.button(t(lang, "try_example"), icon="science", on_click=lambda: _load_text(
-                state, body, lang, BIB_EXAMPLE, "example.bib",
-            )).props("flat color=primary no-caps").mark("bib-example")
+            with ui.element("section").classes("hx-workbench-output"):
+                ui.label(t(lang, "paste_title")).classes("hx-panel-title")
+                paste_area = _draft(ui.textarea(
+                    placeholder=t(lang, "paste_placeholder"),
+                ).props(f'outlined rows=10 aria-label="{t(lang, "paste_placeholder")}"').classes(
+                    "hx-table-editor w-full"
+                ).mark("paste-input"), state, "import_text")
 
-    # ---- capability strip / secondary entrance ----
-    with ui.column().classes("w-full items-center gap-3 mt-5"):
-        pills = [
-            ("brush", t(lang, "tab_format")),
-            ("cleaning_services", t(lang, "tab_clean")),
-            ("auto_fix_high", t(lang, "tab_normalize")),
-            ("rule", t(lang, "tab_check")),
-            ("travel_explore", t(lang, "tab_verify")),
-        ]
-        inner = "".join(
-            f'<span class="hx-feature"><span class="material-icons" aria-hidden="true">'
-            f"{icon}</span>{_esc(label)}</span>"
-            for icon, label in pills
-        )
-        ui.html(f'<div class="hx-features">{inner}</div>')
+                def import_paste() -> None:
+                    raw = (paste_area.value or "").strip()
+                    if not raw:
+                        ui.notify(t(lang, "paste_empty"), type="warning", position="bottom-right")
+                        return
+                    _load_text(state, body, lang, raw + "\n", "pasted.bib")
 
-        def browse_venues() -> None:
-            state["venues_only"] = True
-            body.refresh()
-
-        ui.button(t(lang, "browse_venues"), on_click=browse_venues).props(
-            "flat dense no-caps color=primary"
-        ).mark("browse-venues")
+                ui.button(t(lang, "paste_import"), icon="input", on_click=import_paste).props(
+                    "unelevated color=primary no-caps"
+                ).classes("self-start").mark("paste-load")
+                paste_area.on("keydown.ctrl.enter.prevent", import_paste)
 
 
 def _render_venues_only(state: dict, lang: str, body) -> None:
@@ -1206,7 +1150,8 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
     with ui.element("section").classes("hx-panel-scroll hx-venue-standalone w-full").props(
         'data-hx-scroll="panel-venues-only"'
     ):
-        _panel_venues(state, lang, None, body)
+        with ui.card().classes("hx-card w-full p-4 gap-3"):
+            _panel_venues(state, lang, None, body)
 
 
 # ---------------------------------------------------------------------------
@@ -1214,6 +1159,7 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
 # ---------------------------------------------------------------------------
 def _render_table_page(state: dict, lang: str) -> None:
     running = False
+    review_controls = []
 
     def options() -> TableFormatOptions:
         return TableFormatOptions(
@@ -1249,6 +1195,8 @@ def _render_table_page(state: dict, lang: str) -> None:
         allowed = export_text() is not None
         copy.set_enabled(allowed)
         download.set_enabled(allowed)
+        for update in review_controls:
+            update()
         stored = state["result"]
         if running:
             key = "table_running"
@@ -1317,21 +1265,10 @@ def _render_table_page(state: dict, lang: str) -> None:
                 _busy(fmt_button, False)
                 update_controls()
 
-    def show_preview() -> None:
-        if not _IN_SIM:
-            ui.run_javascript("""
-                document.querySelector('.hx-table-review')?.scrollIntoView({
-                    block: 'start', behavior: 'instant',
-                });
-            """)
-
-    with ui.element("div").classes("hx-operation-grid hx-table-layout w-full"):
-        with ui.card().classes("hx-card hx-options hx-table-input-card w-full gap-3"):
-            _panel_head("grid_on", t(lang, "table_title"), t(lang, "table_note"))
-            ui.html(_steps_html(lang, ["steps_table_input", "steps_table_options", "steps_table_review"]))
-            with ui.column().classes("hx-table-input-body w-full gap-3").props(
-                'data-hx-scroll="options-table"'
-            ):
+    with ui.card().classes("hx-card hx-workbench w-full"):
+        _panel_head("grid_on", t(lang, "table_title"), t(lang, "table_note"))
+        with ui.element("div").classes("hx-workbench-grid w-full"):
+            with ui.element("aside").classes("hx-workbench-rail").props('data-hx-scroll="options-table"'):
                 ui.label(t(lang, "table_paste_title")).classes("hx-optlabel")
                 with ui.element("div").classes("hx-table-source-actions w-full"):
                     ui.upload(
@@ -1357,93 +1294,80 @@ def _render_table_page(state: dict, lang: str) -> None:
                 source.on_value_change(lambda e: update_input("source_text", e.value or ""))
                 source.on("keydown.ctrl.enter.prevent", run_format)
 
-                ui.separator()
-                ui.label(t(lang, "steps_table_options")).classes("hx-optlabel")
-                with ui.element("div").classes("hx-table-format-options w-full"):
-                    ui.select(
-                        {"space": t(lang, "table_amp_space"),
-                         "align": t(lang, "table_amp_align"),
-                         "none": t(lang, "table_amp_none")},
-                        value=state["amp"], label=t(lang, "table_amp"),
-                        on_change=lambda e: update_input("amp", e.value or "space"),
-                    ).mark("table-amp")
+                ui.select(
+                    {"space": t(lang, "table_amp_space"),
+                     "align": t(lang, "table_amp_align"),
+                     "none": t(lang, "table_amp_none")},
+                    value=state["amp"], label=t(lang, "table_amp"),
+                    on_change=lambda e: update_input("amp", e.value or "space"),
+                ).classes("w-full").mark("table-amp")
+                fmt_button = ui.button(
+                    t(lang, "table_format_btn"), icon="auto_fix_high", on_click=run_format,
+                ).props("unelevated color=primary no-caps").classes("w-full").mark("table-format")
+                fmt_button.tooltip("Ctrl + Enter")
+                with ui.expansion(t(lang, "workbench_advanced"), icon="tune").classes(
+                    "hx-workbench-disclosure w-full"
+                ).mark("table-advanced"), ui.column().classes("w-full gap-2"):
                     ui.number(
                         t(lang, "table_indent_label"), value=state["row_indent"],
                         min=0, max=16, step=1, precision=0,
                         on_change=lambda e: update_input("row_indent", max(0, min(16, int(e.value or 0)))),
-                    ).mark("table-indent")
-                ui.switch(
-                    t(lang, "table_blank"), value=state["blank_lines"],
-                    on_change=lambda e: update_input("blank_lines", bool(e.value)),
-                ).mark("table-blank")
+                    ).classes("w-full").mark("table-indent")
+                    ui.switch(
+                        t(lang, "table_blank"), value=state["blank_lines"],
+                        on_change=lambda e: update_input("blank_lines", bool(e.value)),
+                    ).mark("table-blank")
 
-            with ui.element("div").classes("hx-table-run w-full"):
-                ui.label("Ctrl + Enter").classes("hx-kbd")
-                fmt_button = ui.button(t(lang, "table_format_btn"), icon="auto_fix_high", on_click=run_format
-                                       ).props("unelevated color=primary no-caps").mark("table-format")
-                ui.button(t(lang, "table_show_result"), icon="arrow_downward", on_click=show_preview).props(
-                    "outline color=primary no-caps"
-                ).classes("hx-table-jump").mark("table-show-result")
-
-        with ui.column().classes("hx-preview hx-table-review w-full gap-2"):
-            with ui.card().classes("hx-card w-full gap-3"):
-                _panel_head("difference", t(lang, "table_review_title"), t(lang, "table_review_note"))
-                status = ui.label("").classes("hx-tab-note hx-table-status").props("role=status").mark("table-status")
-                with ui.element("div").classes("hx-table-tabs w-full"):
-                    view = ui.toggle(
-                        {"code": t(lang, "table_result_title"), "compare": t(lang, "table_compare_title")},
-                        value=state["table_view"],
-                    ).props("dense unelevated no-caps toggle-color=white toggle-text-color=primary"
-                            ).classes("w-full").mark("table-view")
+            with ui.element("section").classes("hx-workbench-output").props('data-hx-scroll="table-results"'):
+                with ui.row().classes("hx-result-head w-full items-center gap-2"):
+                    ui.label(t(lang, "table_review_title")).classes("hx-panel-title")
                     summary = ui.label("").classes("hx-chip hx-table-summary").mark("table-summary")
-                with ui.element("div").classes("hx-table-frame w-full"):
-                    with ui.element("div").classes("hx-table-pane").props('data-hx-scroll="table-code"') as code:
-                        code_html = ui.html("").classes("w-full").mark("table-code")
-                    with ui.element("div").classes("hx-table-pane").props('data-hx-scroll="table-compare"') as compare:
-                        compare_html = ui.html("").classes("w-full").mark("table-compare")
-                with ui.element("div").classes("hx-preview-actions hx-table-export w-full"):
+                    ui.space()
                     copy = ui.button(t(lang, "table_copy_result"), icon="content_copy", on_click=copy_result).props(
-                        "unelevated color=primary no-caps"
+                        "outline color=primary no-caps"
                     ).mark("table-copy")
                     download = ui.button(t(lang, "table_download"), icon="download", on_click=download_result).props(
                         "outline color=primary no-caps"
                     ).mark("table-download")
-
-    def update_view() -> None:
-        selected = view.value or "code"
-        state["table_view"] = selected
-        code.set_visibility(selected == "code")
-        compare.set_visibility(selected == "compare")
+                status = ui.label("").classes("hx-tab-note hx-result-status").props("role=status").mark("table-status")
+                result_area = ui.column().classes("w-full gap-3").mark("table-compare")
 
     def render_result() -> None:
         stored = state["result"]
         result = stored[1] if stored else None
-        has_tables = bool(result and result.tables)
+        available = result is not None and bool(result.tables)
         summary.set_text(t(lang, "table_summary").format(
             tab=result.tables, rows=result.rows,
         ) if result else t(lang, "table_summary_empty"))
-        view.set_enabled(has_tables)
-        if not has_tables:
-            view.set_value("code")
-        notes = ""
-        if result and result.warnings:
-            label = _esc(t(lang, "table_warnings").format(n=len(result.warnings)))
-            items = "".join(f"<li>{_esc(note)}</li>" for note in result.warnings)
-            notes = f'<details class="hx-table-notices"><summary>{label}</summary><ul>{items}</ul></details>'
-        if has_tables:
-            code_html.set_content(notes + table_result_html(result.text, lang))
-            compare_html.set_content(notes + table_compare_html(stored[0], result.text, lang))
-        else:
-            key = "table_no_tables" if result else "table_preview_placeholder"
-            code_html.set_content(
-                notes + '<div class="hx-empty hx-table-empty">'
-                '<span class="material-icons" aria-hidden="true">table_chart</span>'
-                f"{_esc(t(lang, key))}</div>"
+        review_controls.clear()
+        result_area.clear()
+        with result_area:
+            after = _code_pair(
+                stored[0] if stored else None, result.text if available else None, lang, "table",
+                allow_after=lambda: export_text() is not None,
             )
-            compare_html.set_content("")
-        update_view()
+            if after is not None:
+                review_controls.append(lambda: after.set_enabled(export_text() is not None))
+            if available:
+                def table_parts() -> list:
+                    return [
+                        (f"#{index} · {old.name} · L{old.start_line + 1}",
+                         stored[0][old.begin:old.end], result.text[new.begin:new.end])
+                        for index, (old, new) in enumerate(
+                            zip(find_tables(stored[0])[0], find_tables(result.text)[0]), start=1,
+                        )
+                    ]
 
-    view.on_value_change(lambda _: update_view())
+                review_controls.append(_review_parts(
+                    lang, "table", table_parts, allow_after=lambda: export_text() is not None,
+                ))
+            if result and result.warnings:
+                with ui.expansion(t(lang, "table_warnings").format(n=len(result.warnings)), icon="info").classes(
+                    "hx-workbench-disclosure w-full"
+                ):
+                    for note in result.warnings:
+                        ui.label(note).classes("hx-tab-note")
+
     render_result()
     update_controls()
 
@@ -1490,7 +1414,7 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
 
         _confirm(lang, t(lang, "close_title"), t(lang, "close_body"), close)
 
-    with ui.card().classes("hx-card hx-status w-full px-4 py-3 gap-2"):
+    with ui.element("div").classes("hx-workbench-file w-full"):
         with ui.row().classes("hx-status-meta w-full items-center gap-3 flex-wrap"):
             ui.icon("description", size="20px").style("color:#4338ca")
             ui.label(state["name"]).classes("hx-filename font-semibold").tooltip(state["name"]).mark("file-name")
@@ -1519,11 +1443,11 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
                     "background:#f1f5f9;color:#475569"
                 )
 
-        # clickable stage history: jump to any applied step (or the original)
-        with ui.row().classes("hx-history w-full items-center gap-1 no-wrap"):
-            ui.icon("history", size="16px").style("color:#94a3b8;flex:none")
+        with ui.dialog() as history, ui.card().classes("hx-card w-full gap-3"):
+            ui.label(t(lang, "workbench_history")).classes("hx-panel-title")
 
             def jump(target: int) -> None:
+                history.close()
                 _jump_stage(state, target)
                 body.refresh()
 
@@ -1540,7 +1464,7 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
                     "flat dense no-caps"
                 ).classes(cls).tooltip(t(lang, "stage_jump")).mark(f"stage-{target}")
 
-        with ui.row().classes("w-full items-center gap-1 flex-wrap"):
+        with ui.row().classes("hx-file-actions items-center gap-1"):
             ui.button(t(lang, "undo"), icon="undo", on_click=do_undo).props(
                 "flat dense"
             ).tooltip(t(lang, "undo")).mark("undo-btn").set_enabled(state["pointer"] > 0)
@@ -1549,9 +1473,6 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
             ).tooltip(t(lang, "redo")).mark("redo-btn").set_enabled(
                 state["pointer"] < len(state["history"])
             )
-            ui.button(t(lang, "reset_original"), icon="restart_alt",
-                      on_click=do_reset).props("flat dense").mark("reset-btn")
-            ui.separator().props("vertical").classes("mx-1")
             ui.button(t(lang, "copy_all"), icon="content_copy",
                       on_click=_copy_handler(state["text"], lang)).props(
                 "flat dense"
@@ -1572,19 +1493,21 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
                 except OSError as exc:
                     ui.notify(str(exc), type="negative", position="bottom-right")
 
-            ui.button(t(lang, "save_file"), icon="save", on_click=save_to_path).props(
-                "flat dense"
-            ).set_enabled(bool(state["path"]))
-            ui.space()
-            ui.button(t(lang, "clear"), icon="close", on_click=do_close).props(
-                "flat dense"
-            ).style("color:#6b7280").mark("close-btn")
+            with ui.button(t(lang, "workbench_file_menu"), icon="more_horiz").props(
+                "flat dense no-caps"
+            ).mark("file-actions"):
+                with ui.menu():
+                    ui.menu_item(t(lang, "workbench_history"), on_click=history.open)
+                    ui.menu_item(t(lang, "reset_original"), on_click=do_reset).mark("reset-btn")
+                    if state["path"]:
+                        ui.menu_item(t(lang, "save_file"), on_click=save_to_path)
+                    ui.menu_item(t(lang, "clear"), on_click=do_close).mark("close-btn")
 
 
 # ---------------------------------------------------------------------------
 # Panels
 # ---------------------------------------------------------------------------
-def _build_panel(key: str, state: dict, lang: str, doc, refresh_body: Callable) -> None:
+def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
     builders = {
         "format": _panel_format,
         "clean": _panel_clean,
@@ -1593,63 +1516,236 @@ def _build_panel(key: str, state: dict, lang: str, doc, refresh_body: Callable) 
         "verify": _panel_verify,
         "venues": _panel_venues,
     }
-    builders[key](state, lang, doc, refresh_body)
+    actions = {}
+    quick = {}
+
+    def has_result(key: str) -> bool:
+        if key == "check":
+            return state["check_report"] is not None or state["check_job"] is not None
+        if key == "verify":
+            return state["verify_results"] is not None or state["run_control"] is not None
+        return key in state["previews"] or key in state["preview_jobs"]
+
+    def update_actions() -> None:
+        for key, button in quick.items():
+            active = state["tab"] == key
+            button.props(add="aria-pressed=true" if active else "aria-pressed=false")
+            button.classes(add="hx-action-active" if active else "",
+                           remove="" if active else "hx-action-active")
+            _busy(button, active and (
+                key in state["preview_jobs"] if key == "format" else
+                state["check_job"] is not None if key == "check" else
+                state["run_control"] is not None
+            ))
+
+    async def select(key: str, configure: bool = False):
+        if key != state["tab"]:
+            state["tab"] = key
+            await result.refresh()
+            update_actions()
+        if actions.get("key") != key:
+            return None
+        if configure and "options" in actions:
+            actions["options"]()
+        return actions.get("run")
+
+    def run_action(key: str):
+        async def run() -> None:
+            use_cached = key != state["tab"] and has_result(key)
+            command = await select(key)
+            if command is not None and not use_cached:
+                await command()
+
+        return run
+
+    async def run_arxiv() -> None:
+        command = await select("verify")
+        if command is not None:
+            await command(scope="arxiv")
+
+    with ui.card().classes("hx-card hx-workbench hx-bib-workbench w-full"):
+        _render_status_bar(state, lang, doc, refresh_body)
+        with ui.element("div").classes("hx-workbench-grid w-full"):
+            with ui.element("aside").classes("hx-workbench-rail").props('data-hx-scroll="bib-actions"'):
+                ui.label(t(lang, "workbench_actions")).classes("hx-optlabel")
+                with ui.column().classes("hx-workbench-actions w-full gap-2"):
+                    for key, label, icon in (
+                        ("format", "workbench_organize", "auto_fix_high"),
+                        ("check", "tab_check", "rule"),
+                        ("verify", "workbench_verify", "travel_explore"),
+                    ):
+                        quick[key] = ui.button(t(lang, label), icon=icon, on_click=run_action(key)).props(
+                            "outline color=primary no-caps"
+                        ).mark(f"action-{key}")
+                    with ui.button(t(lang, "workbench_more"), icon="expand_more").props("flat no-caps").mark(
+                        "more-tools"
+                    ):
+                        with ui.menu():
+                            for key in ("clean", "normalize", "venues"):
+                                ui.menu_item(t(lang, "tab_" + key), on_click=lambda k=key: select(
+                                    k, configure=k in {"clean", "normalize"} and not has_result(k),
+                                )).mark(f"action-{key}")
+                            ui.menu_item(t(lang, "arxiv_publication_action"), on_click=run_arxiv).mark("action-arxiv")
+                settings_host = ui.column().classes("w-full gap-2")
+
+            with ui.element("section").classes("hx-workbench-output w-full").props(
+                'data-hx-scroll="bib-results"'
+            ):
+                @ui.refreshable
+                def result() -> None:
+                    key = state["tab"]
+                    settings_host.clear()
+                    actions.clear()
+                    actions["key"] = key
+                    actions["settings_host"] = settings_host
+                    builders[key](state, lang, doc, refresh_body, quick.get(key), actions, select)
+
+                result()
+        update_actions()
 
 
-def _preview_area(lang: str, state: dict, key: str, refresh_body,
-                  placeholder: bool = True) -> ui.column:
-    col = ui.column().classes("hx-preview w-full gap-2").props(f'data-hx-scroll="preview-{key}"')
+@contextmanager
+def _workbench_settings(actions: dict, lang: str, note: str):
+    with actions["settings_host"], ui.expansion(
+        t(lang, "workbench_advanced"), icon="tune",
+    ).classes("hx-workbench-disclosure w-full").mark("bib-advanced") as expansion:
+        actions["options"] = expansion.open
+        with ui.column().classes("hx-workbench-settings w-full gap-3"):
+            ui.label(note).classes("hx-tab-note")
+            yield
+
+
+def _comparison_code(before: str, after: Optional[str]) -> tuple[str, str]:
+    left = before.splitlines()[:_CODE_PREVIEW_LINES]
+    right = after.splitlines()[:_CODE_PREVIEW_LINES] if after is not None else []
+
+    def line(lines, index, kind=""):
+        if index is None:
+            return '<span class="hx-code-line hx-code-gap"></span>'
+        return (f'<span class="hx-code-line{kind}" data-line="{index + 1}">'
+                f"{_esc(lines[index])}</span>")
+
+    if after is None:
+        return "".join(line(left, index) for index in range(len(left))), ""
+    old_rows, new_rows = [], []
+    matcher = difflib.SequenceMatcher(None, left, right)
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        for old, new in zip_longest(range(old_start, old_end), range(new_start, new_end)):
+            old_rows.append(line(left, old, " hx-code-removed" if tag != "equal" else ""))
+            new_rows.append(line(right, new, " hx-code-added" if tag != "equal" else ""))
+    return "".join(old_rows), "".join(new_rows)
+
+
+def _code_pair(before: Optional[str], after: Optional[str], lang: str, key: str,
+               *, allow_after: Optional[Callable] = None) -> Optional[ui.button]:
+    left, right = _comparison_code(before or "", after)
+    after_button = None
+    with ui.element("div").classes("hx-code-pair w-full"):
+        for side, text, code in (("before", before, left), ("after", after, right)):
+            with ui.column().classes("hx-code-side w-full gap-0"):
+                label = t(lang, "code_" + side)
+                copy_label = t(lang, "copy_" + side)
+                with ui.row().classes("hx-code-head w-full items-center gap-2"):
+                    ui.label(label).classes("font-semibold")
+                    ui.space()
+
+                    async def copy(value=text, part=side) -> None:
+                        if value is not None and (part != "after" or allow_after is None or allow_after()):
+                            await _copy_text(value, lang)
+
+                    button = ui.button(copy_label, icon="content_copy", on_click=copy).props(
+                        "flat dense no-caps color=primary"
+                    ).mark(f"{key}-copy-{side}").set_enabled(text is not None)
+                    if side == "after":
+                        after_button = button
+                if text is not None:
+                    ui.html(f'<pre class="hx-code" tabindex="0" '
+                            f'aria-label="{_esc(label)}" data-hx-scroll="{key}-{side}">{code}</pre>'
+                            ).classes("w-full")
+                else:
+                    ui.label(t(lang, "code_unavailable")).classes("hx-tab-note hx-code-placeholder")
+    if any(text is not None and len(text.splitlines()) > _CODE_PREVIEW_LINES for text in (before, after)):
+        ui.label(t(lang, "code_preview_limit").format(n=_CODE_PREVIEW_LINES)).classes("hx-tab-note")
+    return after_button
+
+
+def _entry_comparisons(before: str, after: str) -> list:
+    pairs = match_by_key(
+        parse_bibtex(before).entries, parse_bibtex(after).entries,
+        key=lambda entry: entry.key, identity=entry_identity,
+    )
+
+    def excerpt(source: str, entry: Optional[Entry]) -> Optional[str]:
+        if entry is None or entry.source_span is None:
+            return None
+        start, stop = entry.source_span
+        return source[start:stop]
+
+    return [
+        (f"{(old or new).key} · L{(old or new).line}", excerpt(before, old), excerpt(after, new))
+        for old, new in pairs
+    ]
+
+
+def _review_parts(lang: str, key: str, get_parts: Callable,
+                  allow_after: Optional[Callable] = None) -> Callable:
+    after_button = None
+
+    def update_after() -> None:
+        if after_button is not None and not after_button.is_deleted and allow_after is not None:
+            after_button.set_enabled(allow_after())
+
+    with ui.expansion(t(lang, "workbench_details"), icon="difference").classes(
+        "hx-workbench-disclosure w-full"
+    ).mark(f"{key}-details") as details:
+        slot = ui.column().classes("w-full gap-2")
+
+    def load(e) -> None:
+        if not e.value or slot.default_slot.children:
+            return
+        entries = get_parts()
+        with slot:
+            if not entries:
+                ui.label(t(lang, "no_results")).classes("hx-tab-note")
+                return
+            picker = ui.select(
+                {index: name for index, (name, _, _) in enumerate(entries)},
+                value=0, label=t(lang, "workbench_pick_item"),
+            ).props("use-input hide-selected fill-input").classes("w-full").mark(f"{key}-pick-item")
+            pair_slot = ui.column().classes("w-full gap-2")
+
+            def display() -> None:
+                nonlocal after_button
+                pair_slot.clear()
+                after_button = None
+                if picker.value is None:
+                    return
+                _, before, after = entries[picker.value]
+                with pair_slot:
+                    button = _code_pair(before, after, lang, f"{key}-item", allow_after=allow_after)
+                    if after is not None:
+                        after_button = button
+                    update_after()
+
+            picker.on_value_change(lambda _: display())
+            display()
+
+    details.on_value_change(load)
+    return update_after
+
+
+def _preview_area(lang: str, state: dict, key: str, refresh_body) -> ui.column:
+    col = ui.column().classes("hx-workbench-result w-full gap-3")
     saved = state["previews"].get(key)
     if saved and preview_is_current(state, saved["revision"], saved["before"]):
         _render_preview(col, state, lang, saved["before"], saved["result_text"],
                         refresh_body, opts=saved["opts"], label=saved["label"],
                         revision=saved["revision"], key=key, config=saved["config"])
-        return col
-    if not placeholder:
-        return col
-    with col:
-        with ui.card().classes("hx-card w-full p-5 gap-3"):
-            _panel_head("preview", t(lang, "preview_title"), t(lang, "preview_hint"))
-            with ui.element("div").classes("hx-empty"):
-                ui.icon("difference", size="32px").style("color:#a5b4fc")
-                ui.label(t(lang, "empty_preview"))
+    else:
+        with col:
+            _panel_head("difference", t(lang, "preview_title"), t(lang, "workbench_bib_ready"))
+            _code_pair(state["text"], None, lang, "bib")
     return col
-
-
-def _render_entry_cards(container: ui.column, result_text: str,
-                        opts: Optional[FormatOptions], lang: str) -> None:
-    container.clear()
-    with container:
-        try:
-            doc = parse_bibtex(result_text)
-        except Exception:  # noqa: BLE001 - display-only
-            doc = None
-        if doc is None or not doc.entries:
-            ui.label(t(lang, "entries_view_empty")).classes("hx-tab-note")
-            return
-        ui.label(t(lang, "entries_view_note")).classes("hx-tab-note")
-        for entry in doc.entries:
-            try:
-                text = render_entry(entry, opts or FormatOptions())
-            except Exception:  # noqa: BLE001
-                text = ""
-            with ui.card().classes("hx-entry-card w-full p-3 gap-1"):
-                with ui.row().classes("w-full items-center gap-2"):
-                    ui.label(entry.key).style(
-                        "font-family:ui-monospace,monospace;font-weight:700"
-                    )
-                    ui.label("@" + entry.type).classes("hx-tab-note")
-                    title = (entry.get("title") or "")[:120]
-                    if title:
-                        ui.label(title).classes("text-sm").style("color:#334155")
-                    ui.space()
-                    ui.button(
-                        icon="content_copy",
-                        on_click=_copy_handler(text, lang),
-                    ).props(f'flat dense size=sm aria-label="{t(lang, "copy_entry")}"').tooltip(
-                        t(lang, "copy_entry")
-                    ).mark(f"copy-{entry.key}")
-                ui.html(f"<pre class='hx-pre'>{_esc(text)}</pre>")
 
 
 def _render_preview(container: ui.column, state: dict, lang: str,
@@ -1660,435 +1756,326 @@ def _render_preview(container: ui.column, state: dict, lang: str,
     revision = state["revision"] if revision is None else revision
     config = _preview_config(state, key) if config is None else config
     container.clear()
+
+    def fresh() -> bool:
+        return preview_is_current(state, revision, before) and config == _preview_config(state, key)
+
+    def apply_result() -> None:
+        if not fresh():
+            ui.notify(t(lang, "preview_options_changed"), type="warning")
+            return
+        if _push_stage(state, label or t(lang, "applied"), result_text):
+            ui.notify(t(lang, "step_applied").format(n=state["pointer"], label=label),
+                      type="positive", position="bottom-right")
+            if refresh_body is not None:
+                refresh_body.refresh()
+
     with container:
-        with ui.card().classes("hx-card w-full p-5 gap-3"):
-            ui.label(t(lang, "preview_title")).classes("hx-panel-title").mark(
-                "preview-title"
-            )
-            status = ui.label("").classes("hx-tab-note").style("min-height:40px")
-            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
-                ui.html(_summary_line(before, result_text, lang))
-                with ui.row().classes("items-center gap-2 flex-wrap"):
-                    view_toggle = ui.toggle(
-                        {"list": t(lang, "view_list"),
-                         "diff": t(lang, "view_diff"),
-                         "entries": t(lang, "view_entries")},
-                        value=state["drafts"].get("preview_view", "list"),
-                    ).props(
-                        "dense unelevated no-caps toggle-color=white "
-                        "toggle-text-color=primary"
-                    ).mark("view-mode")
-                    mode_toggle = ui.toggle(
-                        {"changed": t(lang, "changes_only"),
-                         "all": t(lang, "show_all")},
-                        value=state["drafts"].get("preview_mode", "changed"),
-                    ).props(
-                        "dense unelevated no-caps toggle-color=white "
-                        "toggle-text-color=primary"
-                    ).mark("diff-mode")
+        changes = _summary_line(before, result_text, lang)
+        with ui.row().classes("w-full items-center gap-2 hx-result-head"):
+            ui.label(f'{label} · {t(lang, "preview_title")}').classes("hx-panel-title").mark("preview-title")
+            ui.html(changes)
+            ui.space()
+            apply_button = ui.button(t(lang, "apply_btn"), icon="check", on_click=apply_result).props(
+                "unelevated color=primary no-caps"
+            ).mark("apply-btn")
+        status = ui.label("").classes("hx-tab-note").props("role=status")
+        after_button = _code_pair(before, result_text, lang, "bib", allow_after=fresh)
+        update_part = _review_parts(lang, "bib", lambda: _entry_comparisons(before, result_text), allow_after=fresh)
+        with ui.expansion(t(lang, "view_list"), icon="list").classes("hx-workbench-disclosure w-full"):
+            ui.html(changes_html(before, result_text, "changed", lang)).classes("w-full")
 
-            content_container = ui.column().classes("hx-preview-content w-full")
+    def update_status() -> None:
+        if apply_button.is_deleted:
+            return
+        current = preview_is_current(state, revision, before)
+        apply_button.set_enabled(fresh() and result_text != before)
+        after_button.set_enabled(fresh())
+        update_part()
+        message = ("stale_preview" if not current else "preview_options_changed" if not fresh()
+                   else "no_changes" if result_text == before else "preview_current")
+        status.set_text(t(lang, message))
 
-            def render() -> None:
-                view = view_toggle.value or "list"
-                mode = mode_toggle.value or "changed"
-                mode_toggle.set_enabled(view != "entries")
-                content_container.clear()
-                with content_container:
-                    if view == "list":
-                        ui.label(t(lang, "changed_entries")).style(
-                            "font-size:12px;color:#4b5563;text-transform:uppercase;"
-                            "letter-spacing:.05em;font-weight:600"
-                        )
-                        ui.html(changes_html(before, result_text, mode, lang))
-                    elif view == "diff":
-                        ui.label(t(lang, "diff_title")).style(
-                            "font-size:12px;color:#4b5563;text-transform:uppercase;"
-                            "letter-spacing:.05em;font-weight:600"
-                        )
-                        ui.html(entry_diff_html(before, result_text, mode, lang))
-                    else:
-                        _render_entry_cards(ui.column().classes("w-full gap-2"),
-                                            result_text, opts, lang)
-
-            view_toggle.on_value_change(lambda e: (state["drafts"].update(preview_view=e.value), render()))
-            mode_toggle.on_value_change(lambda e: (state["drafts"].update(preview_mode=e.value), render()))
-            render()
-
-            with ui.row().classes("hx-preview-actions w-full justify-end gap-2 flex-wrap"):
-                def apply_result() -> None:
-                    if not preview_is_current(state, revision, before):
-                        ui.notify(t(lang, "stale_preview"), type="warning")
-                        return
-                    if config != _preview_config(state, key):
-                        ui.notify(t(lang, "preview_options_changed"), type="warning")
-                        return
-                    if not _push_stage(state, label or t(lang, "applied"), result_text):
-                        return
-                    ui.notify(
-                        t(lang, "step_applied").format(n=state["pointer"], label=label),
-                        type="positive", position="bottom-right",
-                    )
-                    if refresh_body is not None:
-                        refresh_body.refresh()
-
-                def download_result() -> None:
-                    _download(state, result_text, "edited.bib")
-
-                ui.button(t(lang, "copy_result"), icon="content_copy",
-                          on_click=_copy_handler(result_text, lang)).props(
-                    "outline"
-                ).mark("copy-result-btn")
-                ui.button(t(lang, "download"), icon="download",
-                          on_click=download_result).props("outline")
-                apply_button = ui.button(t(lang, "apply_btn"), icon="check",
-                          on_click=apply_result).props(
-                    "unelevated color=primary"
-                ).mark("apply-btn").set_enabled(result_text != before)
-
-            def update_status() -> None:
-                if apply_button.is_deleted:
-                    return
-                current = preview_is_current(state, revision, before)
-                same_options = config == _preview_config(state, key)
-                apply_button.set_enabled(current and same_options and result_text != before)
-                message = ("stale_preview" if not current else "preview_options_changed"
-                           if not same_options else "no_changes" if result_text == before
-                           else "preview_current")
-                status.set_text(t(lang, message))
-
-            state.setdefault("preview_controls", {})[key] = update_status
-            update_status()
+    state.setdefault("preview_controls", {})[key] = update_status
+    update_status()
 
 
 # -- format -----------------------------------------------------------------
-def _panel_format(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.element("div").classes("hx-operation-grid w-full"):
-        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
-            'data-hx-scroll="options-format"'
-        ):
-            _panel_head("brush", t(lang, "tab_format"), t(lang, "format_note"))
-            ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
-            with ui.row().classes("gap-4 items-end flex-wrap"):
-                indent = _bind(ui.select(
-                    {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
-                    value=_opt(state, "format", "indent") or "4",
-                    label=t(lang, "opt_indent"),
-                ).classes("w-36"), state, "format", "indent")
-                field_order = _bind(ui.select(
-                    {"standard": t(lang, "order_standard"),
-                     "alphabetical": t(lang, "order_alpha"),
-                     "keep": t(lang, "order_keep")},
-                    value=_opt(state, "format", "field_order") or "standard",
-                    label=t(lang, "opt_order"),
-                ).classes("w-44"), state, "format", "field_order")
-                sort = _bind(ui.select(
-                    {"none": t(lang, "sort_none"), "key": "key", "year": "year",
-                     "type": "type", "title": "title"},
-                    value=_opt(state, "format", "sort") or "none",
-                    label=t(lang, "opt_sort"),
-                ).classes("w-36"), state, "format", "sort")
-                align_equals = _bind(ui.switch(t(lang, "opt_align_equals"),
-                                               value=bool(_opt(state, "format", "align_equals"))),
-                                     state, "format", "align_equals")
-                trailing = _bind(ui.switch(t(lang, "opt_trailing_comma"),
-                                           value=bool(_opt(state, "format", "trailing_comma"))),
-                                 state, "format", "trailing_comma")
-                drop_comments = _bind(ui.switch(t(lang, "opt_drop_comments"),
-                                                value=bool(_opt(state, "format", "drop_comments"))),
-                                      state, "format", "drop_comments")
+def _panel_format(state: dict, lang: str, _doc, refresh_body, primary, actions, _navigate) -> None:
+    with _workbench_settings(actions, lang, t(lang, "format_note")):
+        with ui.row().classes("gap-4 items-end flex-wrap"):
+            indent = _bind(ui.select(
+                {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
+                value=_opt(state, "format", "indent") or "4",
+                label=t(lang, "opt_indent"),
+            ).classes("w-36"), state, "format", "indent")
+            field_order = _bind(ui.select(
+                {"standard": t(lang, "order_standard"),
+                 "alphabetical": t(lang, "order_alpha"),
+                 "keep": t(lang, "order_keep")},
+                value=_opt(state, "format", "field_order") or "standard",
+                label=t(lang, "opt_order"),
+            ).classes("w-44"), state, "format", "field_order")
+            sort = _bind(ui.select(
+                {"none": t(lang, "sort_none"), "key": "key", "year": "year",
+                 "type": "type", "title": "title"},
+                value=_opt(state, "format", "sort") or "none",
+                label=t(lang, "opt_sort"),
+            ).classes("w-36"), state, "format", "sort")
+            align_equals = _bind(ui.switch(t(lang, "opt_align_equals"),
+                                           value=bool(_opt(state, "format", "align_equals"))),
+                                 state, "format", "align_equals")
+            trailing = _bind(ui.switch(t(lang, "opt_trailing_comma"),
+                                       value=bool(_opt(state, "format", "trailing_comma"))),
+                             state, "format", "trailing_comma")
+            drop_comments = _bind(ui.switch(t(lang, "opt_drop_comments"),
+                                            value=bool(_opt(state, "format", "drop_comments"))),
+                                  state, "format", "drop_comments")
 
-            ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+        run_button = primary
+        if run_button is None:
             run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-                "unelevated color=primary"
-            ).mark("format-preview")
-        preview = _preview_area(lang, state, "format", refresh_body)
+                "unelevated color=primary no-caps"
+            ).classes("w-full").mark("format-preview")
+    preview = _preview_area(lang, state, "format", refresh_body)
 
-        async def run_format() -> None:
-            opts = FormatOptions(
-                indent=indent.value or "4",
-                align_equals=bool(align_equals.value),
-                field_order=field_order.value or "standard",
-                sort_entries=sort.value or "none",
-                trailing_comma=bool(trailing.value),
-                drop_comments=bool(drop_comments.value),
-            )
-            await _run_preview_job(
-                run_button, preview, state, lang, "format",
-                lambda before: render_document(parse_bibtex(before), opts),
-                refresh_body, opts, t(lang, "tab_format"),
-            )
+    async def run_format() -> None:
+        opts = FormatOptions(
+            indent=indent.value or "4",
+            align_equals=bool(align_equals.value),
+            field_order=field_order.value or "standard",
+            sort_entries=sort.value or "none",
+            trailing_comma=bool(trailing.value),
+            drop_comments=bool(drop_comments.value),
+        )
+        await _run_preview_job(
+            run_button, preview, state, lang, "format",
+            lambda before: render_document(parse_bibtex(before), opts),
+            refresh_body, opts, t(lang, "tab_format"),
+        )
 
+    actions["run"] = run_format
+    if primary is None:
         run_button.on_click(run_format)
 
 
 # -- clean ------------------------------------------------------------------
-def _panel_clean(state: dict, lang: str, doc, refresh_body) -> None:
+def _panel_clean(state: dict, lang: str, _doc, refresh_body, primary, actions, _navigate) -> None:
     common = ["abstract", "keywords", "url", "doi", "isbn", "issn", "month",
               "note", "address", "editor", "publisher", "eprint", "volume", "number"]
-    with ui.element("div").classes("hx-operation-grid w-full"):
-        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
-            'data-hx-scroll="options-clean"'
-        ):
-            _panel_head("cleaning_services", t(lang, "tab_clean"), t(lang, "clean_note"))
-            ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
+    with _workbench_settings(actions, lang, t(lang, "clean_note")):
 
-            ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
-            remove_select = _bind(ui.select(
-                common, value=list(_opt(state, "clean", "remove") or []), multiple=True,
-                label=t(lang, "remove_fields"),
-            ).props("use-chips outlined dense").classes("w-full"),
-                state, "clean", "remove")
-            with ui.row().classes("gap-4 items-end flex-wrap"):
-                custom_remove = ui.input(t(lang, "custom_remove")).classes("w-72")
-                add_key = ui.input(t(lang, "add_key")).classes("w-44")
-                add_value = ui.input(t(lang, "add_value")).classes("w-72")
-                overwrite = ui.switch(t(lang, "overwrite"))
-                for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
-                                    ("add_value", add_value), ("overwrite", overwrite)):
-                    _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
-            with ui.row().classes("gap-6 flex-wrap mt-1"):
-                drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
-                                             value=bool(_opt(state, "clean", "drop_empty"))),
-                                   state, "clean", "drop_empty")
-                drop_others = _bind(ui.switch(t(lang, "drop_others"),
-                                              value=bool(_opt(state, "clean", "drop_others"))),
-                                    state, "clean", "drop_others")
-                months = _bind(ui.switch(t(lang, "months"),
-                                         value=bool(_opt(state, "clean", "months"))),
-                               state, "clean", "months")
-                title_period = _bind(ui.switch(t(lang, "title_period"),
-                                               value=bool(_opt(state, "clean", "title_period"))),
-                                     state, "clean", "title_period")
-                dedupe = _bind(ui.switch(t(lang, "dedupe"),
-                                         value=bool(_opt(state, "clean", "dedupe"))),
-                               state, "clean", "dedupe")
-                keep_last = _bind(ui.switch(t(lang, "keep_last"),
-                                            value=bool(_opt(state, "clean", "keep_last"))),
-                                  state, "clean", "keep_last")
+        ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
+        remove_select = _bind(ui.select(
+            common, value=list(_opt(state, "clean", "remove") or []), multiple=True,
+            label=t(lang, "remove_fields"),
+        ).props("use-chips outlined dense").classes("w-full"),
+            state, "clean", "remove")
+        with ui.row().classes("gap-4 items-end flex-wrap"):
+            custom_remove = ui.input(t(lang, "custom_remove")).classes("w-72")
+            add_key = ui.input(t(lang, "add_key")).classes("w-44")
+            add_value = ui.input(t(lang, "add_value")).classes("w-72")
+            overwrite = ui.switch(t(lang, "overwrite"))
+            for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
+                                ("add_value", add_value), ("overwrite", overwrite)):
+                _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
+        with ui.row().classes("gap-6 flex-wrap mt-1"):
+            drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
+                                         value=bool(_opt(state, "clean", "drop_empty"))),
+                               state, "clean", "drop_empty")
+            drop_others = _bind(ui.switch(t(lang, "drop_others"),
+                                          value=bool(_opt(state, "clean", "drop_others"))),
+                                state, "clean", "drop_others")
+            months = _bind(ui.switch(t(lang, "months"),
+                                     value=bool(_opt(state, "clean", "months"))),
+                           state, "clean", "months")
+            title_period = _bind(ui.switch(t(lang, "title_period"),
+                                           value=bool(_opt(state, "clean", "title_period"))),
+                                 state, "clean", "title_period")
+            dedupe = _bind(ui.switch(t(lang, "dedupe"),
+                                     value=bool(_opt(state, "clean", "dedupe"))),
+                           state, "clean", "dedupe")
+            keep_last = _bind(ui.switch(t(lang, "keep_last"),
+                                        value=bool(_opt(state, "clean", "keep_last"))),
+                              state, "clean", "keep_last")
 
-            ui.label(t(lang, "advanced")).classes("text-sm font-semibold mt-2")
-            with ui.row().classes("gap-6 flex-wrap"):
-                doi = _bind(ui.switch(t(lang, "opt_doi"),
-                                      value=bool(_opt(state, "clean", "doi"))),
-                            state, "clean", "doi")
-                pages = _bind(ui.switch(t(lang, "opt_pages"),
-                                        value=bool(_opt(state, "clean", "pages"))),
-                              state, "clean", "pages")
-                clean_urls = _bind(ui.switch(t(lang, "opt_clean_urls"),
-                                             value=bool(_opt(state, "clean", "clean_urls"))),
-                                   state, "clean", "clean_urls")
-                dedupe_title = _bind(ui.switch(t(lang, "opt_dedupe_title"),
-                                               value=bool(_opt(state, "clean", "dedupe_title"))),
-                                     state, "clean", "dedupe_title")
+        ui.label(t(lang, "advanced")).classes("text-sm font-semibold mt-2")
+        with ui.row().classes("gap-6 flex-wrap"):
+            doi = _bind(ui.switch(t(lang, "opt_doi"),
+                                  value=bool(_opt(state, "clean", "doi"))),
+                        state, "clean", "doi")
+            pages = _bind(ui.switch(t(lang, "opt_pages"),
+                                    value=bool(_opt(state, "clean", "pages"))),
+                          state, "clean", "pages")
+            clean_urls = _bind(ui.switch(t(lang, "opt_clean_urls"),
+                                         value=bool(_opt(state, "clean", "clean_urls"))),
+                               state, "clean", "clean_urls")
+            dedupe_title = _bind(ui.switch(t(lang, "opt_dedupe_title"),
+                                           value=bool(_opt(state, "clean", "dedupe_title"))),
+                                 state, "clean", "dedupe_title")
 
-            ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+        run_button = primary
+        if run_button is None:
             run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-                "unelevated color=primary"
-            ).mark("clean-preview")
-        preview = _preview_area(lang, state, "clean", refresh_body)
+                "unelevated color=primary no-caps"
+            ).classes("w-full").mark("clean-preview")
+    preview = _preview_area(lang, state, "clean", refresh_body)
 
-        def compute(before: str, values: dict) -> str:
-            work = parse_bibtex(before)
-            names = list(values["remove_select"] or [])
-            if values["custom_remove"]:
-                names += [n.strip() for n in re.split(r"[,\s]+", values["custom_remove"]) if n.strip()]
-            if names:
-                cleaner.remove_fields(work, names)
-            if values["add_key"] and values["add_value"]:
-                cleaner.add_fields(work, {values["add_key"].strip(): values["add_value"]},
-                                   overwrite=bool(values["overwrite"]))
-            if values["drop_empty"]:
-                cleaner.drop_empty_fields(work)
-            if values["drop_others"]:
-                cleaner.drop_others(work)
-            if values["months"]:
-                cleaner.normalize_months(work)
-            if values["title_period"]:
-                cleaner.strip_title_periods(work)
-            if values["doi"]:
-                cleaner.normalize_dois(work)
-            if values["pages"]:
-                cleaner.unify_page_ranges(work)
-            if values["clean_urls"]:
-                cleaner.strip_url_tracking(work)
-            if values["dedupe"]:
-                cleaner.dedupe_entries(work, keep="last" if values["keep_last"] else "first")
-            if values["dedupe_title"]:
-                cleaner.dedupe_by_title(work, keep="last" if values["keep_last"] else "first")
-            return render_document(work, FormatOptions())
+    def compute(before: str, values: dict) -> str:
+        work = parse_bibtex(before)
+        names = list(values["remove_select"] or [])
+        if values["custom_remove"]:
+            names += [n.strip() for n in re.split(r"[,\s]+", values["custom_remove"]) if n.strip()]
+        if names:
+            cleaner.remove_fields(work, names)
+        if values["add_key"] and values["add_value"]:
+            cleaner.add_fields(work, {values["add_key"].strip(): values["add_value"]},
+                               overwrite=bool(values["overwrite"]))
+        if values["drop_empty"]:
+            cleaner.drop_empty_fields(work)
+        if values["drop_others"]:
+            cleaner.drop_others(work)
+        if values["months"]:
+            cleaner.normalize_months(work)
+        if values["title_period"]:
+            cleaner.strip_title_periods(work)
+        if values["doi"]:
+            cleaner.normalize_dois(work)
+        if values["pages"]:
+            cleaner.unify_page_ranges(work)
+        if values["clean_urls"]:
+            cleaner.strip_url_tracking(work)
+        if values["dedupe"]:
+            cleaner.dedupe_entries(work, keep="last" if values["keep_last"] else "first")
+        if values["dedupe_title"]:
+            cleaner.dedupe_by_title(work, keep="last" if values["keep_last"] else "first")
+        return render_document(work, FormatOptions())
 
-        async def run_clean() -> None:
-            values = {key: widget.value for key, widget in {
-                "remove_select": remove_select, "custom_remove": custom_remove,
-                "add_key": add_key, "add_value": add_value, "overwrite": overwrite,
-                "drop_empty": drop_empty, "drop_others": drop_others, "months": months,
-                "title_period": title_period, "doi": doi, "pages": pages,
-                "clean_urls": clean_urls, "dedupe": dedupe, "keep_last": keep_last,
-                "dedupe_title": dedupe_title,
-            }.items()}
-            if bool((values["add_key"] or "").strip()) != bool(values["add_value"]):
-                ui.notify(t(lang, "incomplete_field"), type="warning")
-                return
-            await _run_preview_job(
-                run_button, preview, state, lang, "clean",
-                lambda before: compute(before, values), refresh_body,
-                FormatOptions(), t(lang, "tab_clean"),
-            )
+    async def run_clean() -> None:
+        values = {key: widget.value for key, widget in {
+            "remove_select": remove_select, "custom_remove": custom_remove,
+            "add_key": add_key, "add_value": add_value, "overwrite": overwrite,
+            "drop_empty": drop_empty, "drop_others": drop_others, "months": months,
+            "title_period": title_period, "doi": doi, "pages": pages,
+            "clean_urls": clean_urls, "dedupe": dedupe, "keep_last": keep_last,
+            "dedupe_title": dedupe_title,
+        }.items()}
+        if bool((values["add_key"] or "").strip()) != bool(values["add_value"]):
+            ui.notify(t(lang, "incomplete_field"), type="warning")
+            return
+        await _run_preview_job(
+            run_button, preview, state, lang, "clean",
+            lambda before: compute(before, values), refresh_body,
+            FormatOptions(), t(lang, "tab_clean"),
+        )
 
+    actions["run"] = run_clean
+    if primary is None:
         run_button.on_click(run_clean)
 
 
 # -- normalize --------------------------------------------------------------
-def _panel_normalize(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.element("div").classes("hx-operation-grid w-full"):
-        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
-            'data-hx-scroll="options-normalize"'
-        ):
-            _panel_head("auto_fix_high", t(lang, "tab_normalize"), t(lang, "normalize_note"))
-            ui.html(_steps_html(lang, ["steps_options", "steps_preview", "steps_apply"]))
+def _panel_normalize(state: dict, lang: str, _doc, refresh_body, primary, actions, _navigate) -> None:
+    with _workbench_settings(actions, lang, t(lang, "normalize_note")):
 
-            with ui.element("div").classes("hx-optbar w-full items-start"):
-                with ui.column().classes("gap-1"):
-                    ui.label(t(lang, "venue_style")).classes("hx-optlabel")
-                    venue_style = _bind(ui.toggle(
-                        {"abbr": t(lang, "style_abbr_short"),
-                         "full": t(lang, "style_full_short"),
-                         "family": t(lang, "style_family_short"),
-                         "keep": t(lang, "style_keep_short")},
-                        value=_opt(state, "normalize", "venue_style") or "abbr",
-                    ).props(
-                        "unelevated no-caps toggle-color=white toggle-text-color=primary"
-                    ).mark("normalize-venue-style"),
-                        state, "normalize", "venue_style")
-                    example = ui.label("").classes("hx-style-ex")
+        with ui.element("div").classes("hx-optbar w-full items-start"):
+            with ui.column().classes("gap-1"):
+                ui.label(t(lang, "venue_style")).classes("hx-optlabel")
+                venue_style = _bind(ui.toggle(
+                    {"abbr": t(lang, "style_abbr_short"),
+                     "full": t(lang, "style_full_short"),
+                     "family": t(lang, "style_family_short"),
+                     "keep": t(lang, "style_keep_short")},
+                    value=_opt(state, "normalize", "venue_style") or "abbr",
+                ).props(
+                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                ).mark("normalize-venue-style"),
+                    state, "normalize", "venue_style")
+                example = ui.label("").classes("hx-style-ex")
 
-                    def update_example() -> None:
-                        style = venue_style.value or "abbr"
-                        if style == "keep":
-                            example.set_text(t(lang, "style_example_keep"))
-                        else:
-                            venue = get_venue("EMNLP")
-                            example.set_text(t(lang, "style_example").format(
-                                render_venue(venue, style=style)
-                                if venue else "…"
-                            ))
+                def update_example() -> None:
+                    style = venue_style.value or "abbr"
+                    if style == "keep":
+                        example.set_text(t(lang, "style_example_keep"))
+                    else:
+                        venue = get_venue("EMNLP")
+                        example.set_text(t(lang, "style_example").format(
+                            render_venue(venue, style=style)
+                            if venue else "…"
+                        ))
 
-                    update_example()
-                    venue_style.on_value_change(lambda _: update_example())
+                update_example()
+                venue_style.on_value_change(lambda _: update_example())
 
-                    def goto_venues() -> None:
-                        state["tab"] = "venues"
-                        refresh_body.refresh()
+            with ui.column().classes("gap-1"):
+                ui.label(t(lang, "arxiv_style")).classes("hx-optlabel")
+                arxiv_style = _bind(ui.toggle(
+                    {"journal": t(lang, "arxiv_journal_short"),
+                     "misc": t(lang, "arxiv_misc_short"),
+                     "keep": t(lang, "style_keep_short")},
+                    value=_opt(state, "normalize", "arxiv_style") or "journal",
+                ).props(
+                    "unelevated no-caps toggle-color=white toggle-text-color=primary"
+                ).mark("normalize-arxiv-style"),
+                    state, "normalize", "arxiv_style")
+            with ui.column().classes("gap-2"):
+                ui.label(t(lang, "normalize_fixes")).classes("hx-optlabel")
+                fix_types = _bind(ui.switch(t(lang, "fix_types"),
+                                            value=bool(_opt(state, "normalize", "fix_types"))),
+                                  state, "normalize", "fix_types")
+                drop_volume = _bind(ui.switch(t(lang, "drop_arxiv_volume"),
+                                              value=bool(_opt(state, "normalize", "drop_arxiv_volume"))),
+                                    state, "normalize", "drop_arxiv_volume")
+                add_url = _bind(ui.switch(t(lang, "add_arxiv_url"),
+                                          value=bool(_opt(state, "normalize", "add_arxiv_url"))),
+                                state, "normalize", "add_arxiv_url")
 
-                    ui.button(t(lang, "goto_venues"), icon="stadium",
-                              on_click=goto_venues).props(
-                        "flat dense no-caps"
-                    ).classes("hx-lang self-start").style("margin-left:-8px")
-                with ui.column().classes("gap-1"):
-                    ui.label(t(lang, "arxiv_style")).classes("hx-optlabel")
-                    arxiv_style = _bind(ui.toggle(
-                        {"journal": t(lang, "arxiv_journal_short"),
-                         "misc": t(lang, "arxiv_misc_short"),
-                         "keep": t(lang, "style_keep_short")},
-                        value=_opt(state, "normalize", "arxiv_style") or "journal",
-                    ).props(
-                        "unelevated no-caps toggle-color=white toggle-text-color=primary"
-                    ).mark("normalize-arxiv-style"),
-                        state, "normalize", "arxiv_style")
-                with ui.column().classes("gap-2"):
-                    ui.label(t(lang, "normalize_fixes")).classes("hx-optlabel")
-                    fix_types = _bind(ui.switch(t(lang, "fix_types"),
-                                                value=bool(_opt(state, "normalize", "fix_types"))),
-                                      state, "normalize", "fix_types")
-                    drop_volume = _bind(ui.switch(t(lang, "drop_arxiv_volume"),
-                                                  value=bool(_opt(state, "normalize", "drop_arxiv_volume"))),
-                                        state, "normalize", "drop_arxiv_volume")
-                    add_url = _bind(ui.switch(t(lang, "add_arxiv_url"),
-                                              value=bool(_opt(state, "normalize", "add_arxiv_url"))),
-                                    state, "normalize", "add_arxiv_url")
-
-            ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
+        run_button = primary
+        if run_button is None:
             run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-                "unelevated color=primary"
-            ).mark("normalize-preview")
-        preview = _preview_area(lang, state, "normalize", refresh_body)
+                "unelevated color=primary no-caps"
+            ).classes("w-full").mark("normalize-preview")
+    preview = _preview_area(lang, state, "normalize", refresh_body)
 
-        async def run_normalize() -> None:
-            options = NormalizeOptions(
-                venue_style=venue_style.value or "abbr",
-                arxiv_style=arxiv_style.value or "journal",
-                fix_entry_types=bool(fix_types.value),
-                drop_arxiv_volume=bool(drop_volume.value),
-                add_arxiv_url=bool(add_url.value),
-            )
+    async def run_normalize() -> None:
+        options = NormalizeOptions(
+            venue_style=venue_style.value or "abbr",
+            arxiv_style=arxiv_style.value or "journal",
+            fix_entry_types=bool(fix_types.value),
+            drop_arxiv_volume=bool(drop_volume.value),
+            add_arxiv_url=bool(add_url.value),
+        )
 
-            def compute(before: str) -> str:
-                work = parse_bibtex(before)
-                normalize_document(work, options)
-                return render_document(work, FormatOptions())
+        def compute(before: str) -> str:
+            work = parse_bibtex(before)
+            normalize_document(work, options)
+            return render_document(work, FormatOptions())
 
-            await _run_preview_job(run_button, preview, state, lang, "normalize",
-                                   compute, refresh_body, FormatOptions(),
-                                   t(lang, "tab_normalize"))
+        await _run_preview_job(run_button, preview, state, lang, "normalize",
+                               compute, refresh_body, FormatOptions(),
+                               t(lang, "tab_normalize"))
 
+    actions["run"] = run_normalize
+    if primary is None:
         run_button.on_click(run_normalize)
 
 
 # -- check ------------------------------------------------------------------
-def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
+def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions, navigate) -> None:
     controls = {}
+    with _workbench_settings(actions, lang, t(lang, "check_note")):
+        for key in DEFAULT_SETTINGS["check"]:
+            _bind(ui.switch(
+                t(lang, "check_opt_" + key), value=bool(_opt(state, "check", key)),
+            ).mark("check-option-" + key), state, "check", key)
+        ui.label(t(lang, "check_always")).classes("hx-tab-note")
 
-    def goto(key: str) -> None:
-        state["tab"] = key
-        refresh_body.refresh()
-
-    def show_results() -> None:
-        if not _IN_SIM:
-            ui.run_javascript("""
-                const results = document.querySelector('[data-hx-scroll="preview-check"]');
-                if (results) {
-                    results.scrollTop = 0;
-                    results.scrollIntoView({block: 'start', behavior: 'instant'});
-                }
-            """)
-
-    with ui.element("div").classes("hx-operation-grid w-full"):
-        with ui.card().classes("hx-card hx-options w-full p-5 gap-4").props(
-            'data-hx-scroll="options-check"'
-        ):
-            _panel_head("fact_check", t(lang, "tab_check"), t(lang, "check_note"))
-            ui.html(_steps_html(lang, ["steps_options", "steps_check_run", "steps_check_detail"]))
-            run_button = ui.button(t(lang, "run_check"), icon="fact_check").props(
-                "unelevated color=primary"
-            ).classes("hx-check-run").mark("run-check")
-            view_results = ui.button(t(lang, "check_show_results"), icon="arrow_forward",
-                                     on_click=show_results).props(
-                "outline color=primary no-caps"
-            ).mark("check-show-results")
-            ui.label(t(lang, "check_options")).classes("hx-optlabel")
-            with ui.column().classes("w-full gap-1"):
-                for key in DEFAULT_SETTINGS["check"]:
-                    _bind(ui.switch(
-                        t(lang, "check_opt_" + key), value=bool(_opt(state, "check", key)),
-                    ).mark("check-option-" + key), state, "check", key)
-            ui.label(t(lang, "check_always")).classes("hx-tab-note")
-            ui.separator()
-            ui.label(t(lang, "check_next_title")).classes("hx-optlabel")
-            ui.label(t(lang, "check_next_hint")).classes("hx-tab-note")
-            with ui.column().classes("hx-check-shortcuts w-full gap-1"):
-                for key, icon in (("clean", "cleaning_services"), ("normalize", "auto_fix_high"),
-                                  ("verify", "travel_explore")):
-                    ui.button(t(lang, "check_goto_" + key), icon=icon,
-                              on_click=lambda k=key: goto(k)).props(
-                        "flat dense color=primary no-caps"
-                    ).classes("w-full").mark("check-goto-" + key)
-
-        with ui.column().classes("hx-preview w-full gap-2").props('data-hx-scroll="preview-check"'):
-            with ui.card().classes("hx-card w-full p-5 gap-3"):
-                _panel_head("rule", t(lang, "check_results"), t(lang, "check_results_note"))
-                status = ui.label("").classes("hx-tab-note").style("min-height:40px").mark("check-status")
-                result_area = ui.column().classes("w-full gap-3")
+    _panel_head("rule", t(lang, "check_results"), t(lang, "check_results_note"))
+    status = ui.label("").classes("hx-tab-note").props("role=status").mark("check-status")
+    result_area = ui.column().classes("w-full gap-3")
 
     def update_status() -> None:
         if status.is_deleted:
@@ -2096,7 +2083,6 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
         report = state["check_report"]
         running = state["check_job"] is not None
         _busy(run_button, running)
-        view_results.set_enabled(report is not None)
         stale = report is not None and state["check_config"] != _preview_config(state, "check")
         if running:
             text = t(lang, "check_running")
@@ -2124,28 +2110,6 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                         f'<strong>{report.count(severity)}</strong>'
                         f'<span>{_esc(t(lang, "sev_" + severity))}</span></div>'
                     ).classes("w-full").tooltip(t(lang, "sev_" + severity + "_hint"))
-            labels = {"ALL": f'{t(lang, "check_all")} {len(report.issues)}'}
-            labels.update({severity: f'{t(lang, "sev_" + severity)} {report.count(severity)}'
-                           for severity in ("error", "warning", "info")})
-            filters = ui.toggle(labels, value=state["check_filter"]).props(
-                "dense unelevated no-caps toggle-color=white toggle-text-color=primary"
-            ).mark("check-filter")
-            ui.label(t(lang, "check_expand_hint")).classes("hx-tab-note")
-            issues_area = ui.column().classes("hx-check-issues w-full").props(
-                'data-hx-scroll="check-issues"'
-            )
-
-            def show_issues() -> None:
-                issues_area.clear()
-                with issues_area:
-                    ui.html(check_html(report, lang, filters.value or "ALL")).classes("w-full")
-
-            def pick(e) -> None:
-                state["check_filter"] = e.value or "ALL"
-                show_issues()
-
-            filters.on_value_change(pick)
-            show_issues()
 
             def download_json() -> None:
                 if state["check_report"] is not report or state["check_config"] != _preview_config(state, "check"):
@@ -2169,19 +2133,47 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
                                                   on_click=download_json).props(
                     "outline no-caps"
                 ).mark("check-download")
+            with ui.expansion(t(lang, "workbench_issues"), icon="list").classes(
+                "hx-workbench-disclosure w-full"
+            ).mark("check-details"):
+                labels = {"ALL": f'{t(lang, "check_all")} {len(report.issues)}'}
+                labels.update({severity: f'{t(lang, "sev_" + severity)} {report.count(severity)}'
+                               for severity in ("error", "warning", "info")})
+                filters = ui.toggle(labels, value=state["check_filter"]).props(
+                    "dense unelevated no-caps toggle-color=white toggle-text-color=primary"
+                ).mark("check-filter")
+                ui.label(t(lang, "check_expand_hint")).classes("hx-tab-note")
+                issues_area = ui.column().classes("hx-check-issues w-full").props(
+                    'data-hx-scroll="check-issues"'
+                )
+
+                def show_issues() -> None:
+                    issues_area.clear()
+                    with issues_area:
+                        ui.html(check_html(report, lang, filters.value or "ALL")).classes("w-full")
+
+                def pick(e) -> None:
+                    state["check_filter"] = e.value or "ALL"
+                    show_issues()
+
+                filters.on_value_change(pick)
+                show_issues()
+
+                with ui.row().classes("w-full gap-2"):
+                    for key in ("clean", "normalize"):
+                        ui.button(t(lang, "check_goto_" + key), on_click=lambda k=key: navigate(
+                            k, configure=True,
+                        )).props("flat color=primary no-caps").mark("check-goto-" + key)
         update_status()
 
     state.setdefault("preview_controls", {})["check"] = update_status
     if state["check_report"] is not None:
         render_report(state["check_report"])
-    else:
-        with result_area, ui.element("div").classes("hx-empty hx-check-empty"):
-            ui.icon("fact_check", size="36px").style("color:#a5b4fc")
-            ui.label(t(lang, "check_empty_title")).classes("hx-panel-title")
-            ui.label(t(lang, "check_empty_body")).classes("hx-tab-note")
     update_status()
 
     async def run_check() -> None:
+        if state["check_job"] is not None:
+            return
         before, revision = state["text"], state["revision"]
         config = _preview_config(state, "check")
         options = ValidateOptions(**config)
@@ -2208,95 +2200,77 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
             _busy(run_button, False)
             update_status()
 
-    run_button.on_click(run_check)
+    actions["run"] = run_check
 
 # -- verify -----------------------------------------------------------------
-def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
-    def view_report() -> None:
-        if not _IN_SIM:
-            ui.run_javascript("""
-                const results = document.querySelector('[data-hx-scroll="preview-verify"]');
-                if (results) {
-                    results.scrollTop = 0;
-                    results.scrollIntoView({block: 'start', behavior: 'instant'});
-                }
-            """)
+def _panel_verify(state: dict, lang: str, doc, _refresh_body, run_button, actions, _navigate) -> None:
+    with _workbench_settings(actions, lang, t(lang, "verify_note")):
+        scope_setting = _draft(ui.select(
+            {"all": t(lang, "verify_scope_all"), "arxiv": t(lang, "arxiv_publication_action")},
+            label=t(lang, "verify_scope"),
+        ).mark("verify-scope"), state, "verify_scope", "all")
+        ui.label(t(lang, "verify_scope_hint").format(n=len(doc.entries))).classes("hx-tab-note")
+        only = _draft(ui.input(t(lang, "only_keys")).props("outlined dense").mark("verify-keys"),
+                      state, "verify_keys")
+        ui.label(t(lang, "verify_network")).classes("hx-optlabel")
+        ui.label(t(lang, "verify_network_hint")).classes("hx-tab-note")
+        with ui.element("div").classes("hx-verify-controls w-full"):
+            delay = _bind(ui.number(
+                t(lang, "delay"), value=float(_opt(state, "verify", "delay")), min=0, step=0.1,
+            ).props("outlined dense"), state, "verify", "delay")
+            workers = _bind(ui.number(
+                t(lang, "workers"), value=int(_opt(state, "verify", "workers")),
+                min=1, max=8, step=1, precision=0,
+            ).props("outlined dense").tooltip(t(lang, "workers_hint")), state, "verify", "workers")
+        use_cache = _bind(ui.switch(t(lang, "use_cache"), value=bool(_opt(state, "verify", "use_cache"))),
+                          state, "verify", "use_cache")
 
-    with ui.element("div").classes("hx-operation-grid w-full"):
-        with ui.card().classes("hx-card hx-options w-full p-5 gap-3").props(
-            'data-hx-scroll="options-verify"'
+    _panel_head("rule", t(lang, "verify_results"), t(lang, "verify_results_note"))
+    status = ui.label("").classes("hx-tab-note hx-verify-status").props(
+        'role=status aria-live=polite'
+    ).mark("verify-status")
+    progress_bar = ui.linear_progress(value=0, show_value=False).classes("w-full").props(
+        f'aria-label="{t(lang, "steps_verify_run")}"'
+    )
+    with ui.element("div").classes("hx-check-metrics w-full") as metrics:
+        summaries = [
+            ("verify_attention", "warning_amber", "WARN"),
+            ("verdict_INFO", "help_outline", "INFO"),
+            ("verdict_OK", "check_circle_outline", "OK"),
+        ]
+        counters = []
+        for label, icon, verdict in summaries:
+            with ui.element("div").classes("hx-check-metric").style(
+                f"--metric-color:{VERDICT_COLOR[verdict]}"
+            ):
+                ui.icon(icon).props("aria-hidden=true")
+                counters.append(ui.label("—").classes("hx-metric-number"))
+                ui.label(t(lang, label)).classes("hx-metric-label")
+    publication_report = ui.html("").classes("w-full").mark("arxiv-report")
+    with ui.row().classes("hx-preview-actions w-full items-center gap-2"):
+        ui.label(t(lang, "verify_readonly")).classes("hx-tab-note")
+        ui.space()
+        download_button = ui.button(t(lang, "download_report"), icon="download").props(
+            "outline color=primary no-caps"
+        ).mark("verify-download")
+
+    with ui.row().classes("w-full items-center gap-2"):
+        pause_button = ui.button(t(lang, "pause"), icon="pause").props(
+            "outline color=primary no-caps"
+        ).mark("verify-pause")
+        stop_button = ui.button(t(lang, "stop"), icon="stop").props(
+            "outline color=red-7 no-caps"
+        ).mark("verify-stop")
+    with ui.expansion(t(lang, "workbench_issues"), icon="list").classes(
+        "hx-workbench-disclosure w-full"
+    ).mark("verify-details") as details_expansion:
+        filters = ui.select({"ALL": t(lang, "check_all")}, value="ALL", label=t(lang, "verify_filter")).props(
+            "outlined dense options-dense"
+        ).classes("w-full").mark("verify-filter")
+        with ui.element("div").classes("hx-check-issues hx-verify-list w-full").props(
+            'data-hx-scroll="verify-issues"'
         ):
-            _panel_head("travel_explore", t(lang, "tab_verify"), t(lang, "verify_note"))
-            ui.html(_steps_html(lang, ["steps_verify_scope", "steps_verify_run", "steps_verify_result"]))
-            ui.label(t(lang, "verify_scope")).classes("hx-optlabel")
-            ui.label(t(lang, "verify_scope_hint").format(n=len(doc.entries))).classes("hx-tab-note")
-            only = _draft(ui.input(t(lang, "only_keys")).props("outlined dense").mark("verify-keys"),
-                          state, "verify_keys")
-            run_button = ui.button(t(lang, "start_verify"), icon="travel_explore").props(
-                "unelevated color=primary no-caps"
-            ).mark("verify-start")
-            with ui.element("div").classes("hx-verify-controls w-full"):
-                pause_button = ui.button(t(lang, "pause"), icon="pause").props(
-                    "outline color=primary no-caps"
-                ).mark("verify-pause")
-                stop_button = ui.button(t(lang, "stop"), icon="stop").props(
-                    "outline color=red-7 no-caps"
-                ).mark("verify-stop")
-            view_button = ui.button(t(lang, "verify_show_results"), icon="arrow_forward",
-                                    on_click=view_report).props(
-                "outline color=primary no-caps"
-            ).mark("verify-show-results")
-            ui.label(t(lang, "verify_controls_hint")).classes("hx-tab-note")
-            ui.separator()
-            ui.label(t(lang, "verify_network")).classes("hx-optlabel")
-            ui.label(t(lang, "verify_network_hint")).classes("hx-tab-note")
-            with ui.element("div").classes("hx-verify-controls w-full"):
-                delay = _bind(ui.number(
-                    t(lang, "delay"), value=float(_opt(state, "verify", "delay")), min=0, step=0.1,
-                ).props("outlined dense"), state, "verify", "delay")
-                workers = _bind(ui.number(
-                    t(lang, "workers"), value=int(_opt(state, "verify", "workers")),
-                    min=1, max=8, step=1, precision=0,
-                ).props("outlined dense").tooltip(t(lang, "workers_hint")), state, "verify", "workers")
-            use_cache = _bind(ui.switch(t(lang, "use_cache"), value=bool(_opt(state, "verify", "use_cache"))),
-                              state, "verify", "use_cache")
-
-        with ui.column().classes("hx-preview w-full gap-2").props('data-hx-scroll="preview-verify"'):
-            with ui.card().classes("hx-card w-full p-5 gap-3"):
-                _panel_head("rule", t(lang, "verify_results"), t(lang, "verify_results_note"))
-                status = ui.label("").classes("hx-tab-note hx-verify-status").props(
-                    'role=status aria-live=polite'
-                ).mark("verify-status")
-                progress_bar = ui.linear_progress(value=0, show_value=False).classes("w-full").props(
-                    f'aria-label="{t(lang, "steps_verify_run")}"'
-                )
-                with ui.element("div").classes("hx-check-metrics w-full"):
-                    summaries = [
-                        ("verify_attention", "warning_amber", "WARN"),
-                        ("verdict_INFO", "help_outline", "INFO"),
-                        ("verdict_OK", "check_circle_outline", "OK"),
-                    ]
-                    counters = []
-                    for label, icon, verdict in summaries:
-                        with ui.element("div").classes("hx-check-metric").style(
-                            f"--metric-color:{VERDICT_COLOR[verdict]}"
-                        ):
-                            ui.icon(icon).props("aria-hidden=true")
-                            counters.append(ui.label("—").classes("hx-metric-number"))
-                            ui.label(t(lang, label)).classes("hx-metric-label")
-                filters = ui.select({"ALL": t(lang, "check_all")}, value="ALL", label=t(lang, "verify_filter")).props(
-                    "outlined dense options-dense"
-                ).classes("w-full").mark("verify-filter")
-                with ui.element("div").classes("hx-check-issues hx-verify-list w-full").props(
-                    'data-hx-scroll="verify-issues"'
-                ):
-                    result_area = ui.html("").classes("w-full").mark("verify-list")
-                with ui.row().classes("hx-preview-actions w-full items-center gap-2"):
-                    ui.label(t(lang, "verify_readonly")).classes("hx-tab-note")
-                    ui.space()
-                    download_button = ui.button(t(lang, "download_report"), icon="download").props(
-                        "outline color=primary no-caps"
-                    ).mark("verify-download")
+            result_area = ui.html("").classes("w-full").mark("verify-list")
 
     rendered = None
     last_status = None
@@ -2328,9 +2302,9 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
         pause_button.set_text(t(lang, "resume" if paused else "pause"))
         pause_button.set_icon("play_arrow" if paused else "pause")
         stop_button.set_enabled(running and not stopping)
-        view_button.set_enabled(bool(results))
+        details_expansion.set_enabled(bool(results))
         download_button.set_enabled(bool(results))
-        for widget in (only, delay, workers, use_cache):
+        for widget in (only, delay, workers, use_cache, scope_setting):
             widget.set_enabled(not running)
         progress_bar.set_value(done / total if total else 0)
         if running:
@@ -2354,6 +2328,15 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
         for label, count in zip(counters, totals):
             label.set_text(str(count) if results is not None else "—")
         options = {"ALL": t(lang, "check_all")}
+        arxiv_scope = progress.get("scope") == "arxiv"
+        metrics.set_visibility(not arxiv_scope)
+        publication_report.set_visibility(arxiv_scope and bool(results))
+        if arxiv_scope and results:
+            publication_report.set_content(
+                f'<strong>{_esc(t(lang, "arxiv_status_title"))}</strong>'
+                f'<div class="hx-tab-note">{_esc(t(lang, "arxiv_status_note"))}</div>'
+                + "".join(_arxiv_publication_item(item, lang) for item in results)
+            )
         if results:
             options["ALL"] += f" · {len(results)}"
             options.update({key: f'{t(lang, "verdict_" + key)} · {counts[key]}' for key in VERDICT_COLOR})
@@ -2373,11 +2356,12 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
                 f'{title}<div class="hx-tab-note">{_esc(t(lang, message))}</div></div>'
             )
 
-    async def run_verify() -> None:
+    async def run_verify(scope=None) -> None:
         if state["run_control"] is not None:
             return
         before, revision = state["text"], state["revision"]
-        keys = set((only.value or "").replace(",", " ").split())
+        keys = set() if scope == "arxiv" else set((only.value or "").replace(",", " ").split())
+        scope = scope or scope_setting.value
         entries = list(doc.entries)
         if keys:
             missing = keys - {entry.key for entry in entries}
@@ -2385,8 +2369,10 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
                 ui.notify(t(lang, "unknown_keys").format(keys=", ".join(sorted(missing))), type="warning")
                 return
             entries = [entry for entry in entries if entry.key in keys]
+        if scope == "arxiv":
+            entries = [entry for entry in entries if extract_arxiv_id(entry)]
         if not entries:
-            ui.notify(t(lang, "no_results"), type="warning")
+            ui.notify(t(lang, "arxiv_no_entries" if scope == "arxiv" else "no_results"), type="warning")
             return
 
         n_workers = max(1, min(8, int(workers.value or 1)))
@@ -2395,6 +2381,7 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
         control = RunControl()
         progress = {"done": 0, "total": len(entries), "key": "", "running": True, "paused": False}
         state.update(run_control=control, progress=progress, verify_results=None, verify_filter="ALL")
+        progress["scope"] = scope
         sync_view()
 
         progress_lock = Lock()
@@ -2459,7 +2446,7 @@ def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
             )
 
     filters.on_value_change(pick)
-    run_button.on_click(run_verify)
+    actions["run"] = run_verify
     pause_button.on_click(toggle_pause)
     stop_button.on_click(stop_run)
     download_button.on_click(download_report)
@@ -2502,7 +2489,7 @@ def _normalize_venue_preview(before: str, style: str) -> str:
     return render_document(work, FormatOptions()) if changed else before
 
 
-def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
+def _panel_venues(state: dict, lang: str, doc, refresh_body, _primary=None, actions=None, _navigate=None) -> None:
     usage = Counter()
     matched = 0
     if doc is not None:
@@ -2511,91 +2498,59 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
             matched += bool(presets)
             usage.update(presets)
 
-    def reveal_results() -> None:
-        if not _IN_SIM:
-            ui.run_javascript("""
-                document.querySelector('.hx-venue-results').scrollIntoView({
-                    block: 'start', behavior: 'instant',
-                });
-            """)
+    _panel_head("stadium", t(lang, "venues_catalog"), t(lang, "venues_catalog_note"))
 
-    with ui.element("div").classes("hx-operation-grid w-full"):
-        with ui.card().classes("hx-card hx-options w-full p-5 gap-3").props(
-            'data-hx-scroll="options-venues"'
-        ):
-            _panel_head("stadium", t(lang, "tab_venues"), t(lang, "venues_note"))
-            ui.html(_steps_html(lang, ["steps_venue_search", "steps_venue_copy"]) if doc is None else
-                    _steps_html(lang, ["steps_venue_search", "steps_preview", "steps_apply"]))
-            ui.label(t(lang, "venues_find")).classes("hx-optlabel")
-            query = _draft(ui.input(t(lang, "search_venues"), placeholder=t(lang, "venues_search_hint"))
-                           .props("outlined dense").mark("venue-search"), state, "venue_query")
-            with ui.element("div").classes("hx-venue-filters w-full"):
-                kind = _draft(ui.select(
-                    {"ALL": t(lang, "venue_all_kinds"),
-                     **{key: t(lang, "venue_kind_" + key) for key in (CONFERENCE, JOURNAL)}},
-                    label=t(lang, "venue_kind"),
-                ).props("outlined dense options-dense").mark("venue-kind"), state, "venue_kind", "ALL")
-                family = _draft(ui.select(
-                    {"ALL": t(lang, "venue_all_families"), **{name: name for name in families()}},
-                    label=t(lang, "family"),
-                ).props("outlined dense options-dense").mark("venue-family"), state, "venue_family", "ALL")
+    if actions is not None:
+        with _workbench_settings(actions, lang, t(lang, "venues_norm_note").format(n=matched)):
+            _bind(ui.select(
+                {key: t(lang, "style_" + key + "_short") for key in _VENUE_STYLES},
+                value=_opt(state, "venues", "preset_style"), label=t(lang, "venue_style"),
+            ).mark("venue-norm-style"), state, "venues", "preset_style")
+            run_button = ui.button(t(lang, "venues_norm_btn"), icon="preview").props(
+                "unelevated color=primary no-caps"
+            ).mark("venue-normalize-preview").set_enabled(matched > 0)
 
-            used_only = None
-            if doc is not None:
-                used_only = _draft(ui.switch(t(lang, "venues_used_only")).mark("venue-used-only"),
-                                   state, "venue_used_only", False)
-            reset_button = ui.button(t(lang, "venues_clear_filters"), icon="filter_alt_off").props(
-                "flat dense color=primary no-caps"
-            ).mark("venue-clear-filters")
+        with ui.expansion(t(lang, "venues_apply"), icon="auto_fix_high", value="venues" in state["previews"]).classes(
+            "hx-workbench-disclosure w-full"
+        ).mark("venue-apply") as show_preview:
+            preview = _preview_area(lang, state, "venues", refresh_body)
 
-            ui.separator()
-            if doc is None:
-                ui.label(t(lang, "venues_norm_offline")).classes("hx-tab-note")
-            else:
-                ui.label(t(lang, "venues_filter_scope")).classes("hx-tab-note")
+        async def run_venue_normalize() -> None:
+            if matched:
+                show_preview.open()
+                style = _opt(state, "venues", "preset_style")
+                await _run_preview_job(
+                    run_button, preview, state, lang, "venues", lambda before: _normalize_venue_preview(before, style),
+                    refresh_body, FormatOptions(), t(lang, "venues_norm_label"),
+                )
 
-            ui.button(t(lang, "venues_view_results"), icon="arrow_downward", on_click=reveal_results).props(
-                "outline color=primary no-caps"
-            ).classes("hx-venue-jump").mark("venue-view-results")
+        run_button.on_click(run_venue_normalize)
 
-        with ui.column().classes("hx-preview hx-venue-results w-full gap-2").props(
-            'data-hx-scroll="results-venues"'
-        ):
-            with ui.card().classes("hx-card w-full p-5 gap-3"):
-                title = "venues_catalog" if doc is None else "venues_results"
-                note = "venues_catalog_note" if doc is None else "venues_results_note"
-                _panel_head("local_library", t(lang, title), t(lang, note))
-                view = None
-                if doc is not None:
-                    view = _draft(ui.toggle(
-                        {"catalog": t(lang, "venues_catalog"), "preview": t(lang, "venues_apply")},
-                    ).props("dense unelevated no-caps toggle-color=white toggle-text-color=primary")
-                        .classes("hx-venue-view w-full").mark("venue-view"), state, "venue_view", "catalog")
-                with ui.element("div").classes("hx-venue-frame w-full"):
-                    with ui.column().classes("hx-venue-catalog w-full gap-2") as catalog:
-                        count = ui.label("").classes("hx-tab-note").props("role=status").mark("venue-count")
-                        grid_area = ui.column().classes("hx-venue-scroll w-full gap-2").props(
-                            'data-hx-scroll="catalog-venues"'
-                        ).mark("venue-results")
-                    if view is not None:
-                        with ui.column().classes("hx-venue-preview-slot w-full gap-3").props(
-                            'data-hx-scroll="apply-venues"'
-                        ) as preview_panel:
-                            ui.label(t(lang, "venues_norm_title")).classes("hx-optlabel")
-                            ui.label(t(lang, "venues_norm_note").format(n=matched)).classes("hx-tab-note")
-                            with ui.element("div").classes("hx-venue-apply-controls w-full"):
-                                _bind(ui.select(
-                                    {key: t(lang, "style_" + key + "_short") for key in _VENUE_STYLES},
-                                    value=_opt(state, "venues", "preset_style"), label=t(lang, "venue_style"),
-                                ).props("outlined dense options-dense").mark("venue-norm-style"),
-                                    state, "venues", "preset_style")
-                                run_button = ui.button(t(lang, "venues_norm_btn"), icon="preview").props(
-                                    "unelevated color=primary no-caps"
-                                ).mark("venue-normalize-preview")
-                                run_button.set_enabled(matched > 0)
-                            preview = _preview_area(lang, state, "venues", refresh_body).classes(
-                                "hx-venue-preview"
-                            )
+    query = _draft(ui.input(t(lang, "search_venues"), placeholder=t(lang, "venues_search_hint"))
+                   .classes("w-full").mark("venue-search"), state, "venue_query")
+    with ui.expansion(t(lang, "workbench_filters"), icon="filter_alt").classes(
+        "hx-workbench-disclosure w-full"
+    ).mark("venue-filters"):
+        with ui.element("div").classes("hx-venue-filters w-full"):
+            kind = _draft(ui.select(
+                {"ALL": t(lang, "venue_all_kinds"),
+                 **{key: t(lang, "venue_kind_" + key) for key in (CONFERENCE, JOURNAL)}},
+                label=t(lang, "venue_kind"),
+            ).mark("venue-kind"), state, "venue_kind", "ALL")
+            family = _draft(ui.select(
+                {"ALL": t(lang, "venue_all_families"), **{name: name for name in families()}},
+                label=t(lang, "family"),
+            ).mark("venue-family"), state, "venue_family", "ALL")
+        used_only = None
+        if doc is not None:
+            used_only = _draft(ui.switch(t(lang, "venues_used_only")).mark("venue-used-only"),
+                               state, "venue_used_only", False)
+    with ui.row().classes("w-full items-center gap-2"):
+        count = ui.label("").classes("hx-tab-note").props("role=status").mark("venue-count")
+        reset_button = ui.button(t(lang, "venues_clear_filters"), icon="filter_alt_off").props(
+            "flat dense color=primary no-caps"
+        ).mark("venue-clear-filters")
+    grid_area = ui.column().classes("w-full gap-2").mark("venue-results")
 
     def render_catalog() -> None:
         matches = [
@@ -2614,20 +2569,7 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
                     for venue in matches:
                         _venue_card(venue, lang, usage[venue.abbr])
             else:
-                with ui.element("div").classes("hx-empty hx-venue-empty"):
-                    ui.icon("search_off", size="32px")
-                    ui.label(t(lang, "no_venues")).classes("hx-panel-title")
-                    ui.label(t(lang, "venues_no_match_hint")).classes("hx-tab-note")
-
-    def on_filter(_) -> None:
-        if view is not None:
-            view.set_value("catalog")
-        render_catalog()
-        if not _IN_SIM:
-            ui.run_javascript("""
-                const list = document.querySelector('[data-hx-scroll="catalog-venues"]');
-                if (list) list.scrollTop = 0;
-            """)
+                ui.label(t(lang, "no_venues")).classes("hx-tab-note")
 
     def reset_filters() -> None:
         query.set_value("")
@@ -2638,25 +2580,6 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body) -> None:
 
     for widget in (query, kind, family, used_only):
         if widget is not None:
-            widget.on_value_change(on_filter)
+            widget.on_value_change(lambda _: render_catalog())
     reset_button.on_click(reset_filters)
     render_catalog()
-
-    if view is not None:
-        def show_view() -> None:
-            showing_preview = view.value == "preview"
-            catalog.set_visibility(not showing_preview)
-            preview_panel.set_visibility(showing_preview)
-
-        async def run_venue_normalize() -> None:
-            if not matched:
-                return
-            style = _opt(state, "venues", "preset_style")
-            await _run_preview_job(
-                run_button, preview, state, lang, "venues", lambda before: _normalize_venue_preview(before, style),
-                refresh_body, FormatOptions(), t(lang, "venues_norm_label"),
-            )
-
-        view.on_value_change(lambda _: show_view())
-        run_button.on_click(run_venue_normalize)
-        show_view()

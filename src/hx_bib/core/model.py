@@ -34,6 +34,7 @@ class Entry:
     # @string macros) are flagged here so the writer does not wrap them.
     bare_fields: set = field(default_factory=set)
     line: int = 0  # 1-based line number of the "@" that opened the entry
+    source_span: Optional[tuple[int, int]] = field(default=None, repr=False, compare=False)
 
     # -- field access (case-insensitive) -----------------------------------
     def get(self, name: str, default: Optional[str] = None) -> Optional[str]:

@@ -3,6 +3,8 @@
 from hx_bib.core.parser import parse_bibtex
 from hx_bib.core.validator import Issue, ValidationReport, validate_text
 from hx_bib.gui.app import (
+    _comparison_code,
+    _entry_comparisons,
     _normalize_venue_preview,
     changes_html,
     check_html,
@@ -48,6 +50,24 @@ def test_changes_html_changed_mode_filters_unchanged():
     everything = changes_html(BEFORE, AFTER, "all", "en")
     assert ">a<" in changed and ">b<" not in changed
     assert ">a<" in everything and ">b<" in everything
+
+
+def test_comparison_highlights_changes_and_escapes_literal_code():
+    before, after = _comparison_code("unchanged\n<old>", "unchanged\n<new>")
+    assert 'hx-code-removed" data-line="2">&lt;old&gt;' in before
+    assert 'hx-code-added" data-line="2">&lt;new&gt;' in after
+    assert 'hx-code-line" data-line="1">unchanged' in before
+
+
+def test_entry_copies_preserve_inline_blocks_and_duplicate_occurrences():
+    retained = '@article{same,title="Last (one)"}'
+    removed = "@article{same,title={First}}"
+    other = "@misc{other,title={Another}}"
+    before = f"{removed} {retained}\r\n{other}"
+    pairs = _entry_comparisons(before, f"{retained}\n{other}")
+    assert [(old, new) for _, old, new in pairs] == [
+        (removed, None), (retained, retained), (other, other),
+    ]
 
 
 def test_venue_preview_only_normalizes_recognized_entries():

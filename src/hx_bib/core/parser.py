@@ -103,6 +103,7 @@ def parse_bibtex(text: str) -> Document:
             text, at, m.end(), etype, open_char, close_char, cur.line_of(at)
         )
         if entry is not None:
+            entry.source_span = (at, cur.pos)
             doc.entries.append(entry)
         if error:
             doc.warnings.append(error)
