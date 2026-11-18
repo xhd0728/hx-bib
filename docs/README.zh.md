@@ -16,6 +16,8 @@ python -m pip install -e .
 hx-bib gui
 # 指定端口，不自动打开浏览器：
 hx-bib gui --port 9000 --no-show
+# 在终端输出服务启动、请求、缓存和异常的详细日志：
+hx-bib gui --debug
 ```
 
 默认访问 [localhost:8080](http://127.0.0.1:8080)。

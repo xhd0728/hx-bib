@@ -16,6 +16,8 @@ python -m pip install -e .
 hx-bib gui
 # Custom port, without opening a browser:
 hx-bib gui --port 9000 --no-show
+# Detailed server, request, cache, and error logs in the terminal:
+hx-bib gui --debug
 ```
 
 Open [localhost:8080](http://127.0.0.1:8080) for the default port.
