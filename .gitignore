@@ -25,3 +25,8 @@ Thumbs.db
 
 # Secrets
 .env
+
+# Rust build artifacts
+rust/target/
+rust/gen/
+rust/tauri.release.json

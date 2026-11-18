@@ -1,0 +1,300 @@
+[
+  {
+    "abbr": "ACL",
+    "name": "Annual Meeting of the Association for Computational Linguistics",
+    "family": "ARR",
+    "kind": "conference",
+    "aliases": [
+      "Association for Computational Linguistics",
+      "ACL"
+    ]
+  },
+  {
+    "abbr": "EMNLP",
+    "name": "Conference on Empirical Methods in Natural Language Processing",
+    "family": "ARR",
+    "kind": "conference",
+    "aliases": [
+      "Empirical Methods in Natural Language Processing"
+    ]
+  },
+  {
+    "abbr": "NAACL",
+    "name": "North American Chapter of the Association for Computational Linguistics",
+    "family": "ARR",
+    "kind": "conference",
+    "aliases": [
+      "North American Chapter of the ACL"
+    ]
+  },
+  {
+    "abbr": "EACL",
+    "name": "European Chapter of the Association for Computational Linguistics",
+    "family": "ARR",
+    "kind": "conference",
+    "aliases": [
+      "European Chapter of the ACL"
+    ]
+  },
+  {
+    "abbr": "AACL",
+    "name": "Asian Chapter of the Association for Computational Linguistics",
+    "family": "ARR",
+    "kind": "conference",
+    "aliases": [
+      "Asian Chapter of the ACL",
+      "AACL-IJCNLP"
+    ]
+  },
+  {
+    "abbr": "COLING",
+    "name": "International Conference on Computational Linguistics",
+    "family": "ARR",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "TACL",
+    "name": "Transactions of the Association for Computational Linguistics",
+    "family": "ARR",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "CL",
+    "name": "Computational Linguistics",
+    "family": "ARR",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "NeurIPS",
+    "name": "Advances in Neural Information Processing Systems",
+    "family": "NeurIPS",
+    "kind": "conference",
+    "aliases": [
+      "Conference on Neural Information Processing Systems",
+      "Neural Information Processing Systems",
+      "NIPS"
+    ]
+  },
+  {
+    "abbr": "ICLR",
+    "name": "International Conference on Learning Representations",
+    "family": "ICLR",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "ICML",
+    "name": "International Conference on Machine Learning",
+    "family": "PMLR",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "AISTATS",
+    "name": "International Conference on Artificial Intelligence and Statistics",
+    "family": "PMLR",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "UAI",
+    "name": "Conference on Uncertainty in Artificial Intelligence",
+    "family": "PMLR",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "JMLR",
+    "name": "Journal of Machine Learning Research",
+    "family": "JMLR",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "TMLR",
+    "name": "Transactions on Machine Learning Research",
+    "family": "TMLR",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "AAAI",
+    "name": "AAAI Conference on Artificial Intelligence",
+    "family": "AAAI",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "IJCAI",
+    "name": "International Joint Conference on Artificial Intelligence",
+    "family": "IJCAI",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "KDD",
+    "name": "ACM SIGKDD Conference on Knowledge Discovery and Data Mining",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": [
+      "Knowledge Discovery and Data Mining",
+      "SIGKDD"
+    ]
+  },
+  {
+    "abbr": "SIGIR",
+    "name": "International ACM SIGIR Conference on Research and Development in Information Retrieval",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": [
+      "Research and Development in Information Retrieval"
+    ]
+  },
+  {
+    "abbr": "MM",
+    "name": "ACM International Conference on Multimedia",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": [
+      "International Conference on Multimedia"
+    ]
+  },
+  {
+    "abbr": "WWW",
+    "name": "ACM Web Conference",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": [
+      "The Web Conference",
+      "World Wide Web Conference"
+    ]
+  },
+  {
+    "abbr": "CIKM",
+    "name": "ACM International Conference on Information and Knowledge Management",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "WSDM",
+    "name": "ACM International Conference on Web Search and Data Mining",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "RecSys",
+    "name": "ACM Conference on Recommender Systems",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "CHI",
+    "name": "ACM CHI Conference on Human Factors in Computing Systems",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": [
+      "Human Factors in Computing Systems"
+    ]
+  },
+  {
+    "abbr": "SIGMOD",
+    "name": "ACM SIGMOD International Conference on Management of Data",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "CCS",
+    "name": "ACM Conference on Computer and Communications Security",
+    "family": "ACM",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "TOIS",
+    "name": "ACM Transactions on Information Systems",
+    "family": "ACM",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "TKDD",
+    "name": "ACM Transactions on Knowledge Discovery from Data",
+    "family": "ACM",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "CVPR",
+    "name": "IEEE/CVF Conference on Computer Vision and Pattern Recognition",
+    "family": "IEEE",
+    "kind": "conference",
+    "aliases": [
+      "Computer Vision and Pattern Recognition"
+    ]
+  },
+  {
+    "abbr": "ICCV",
+    "name": "IEEE/CVF International Conference on Computer Vision",
+    "family": "IEEE",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "ICDM",
+    "name": "IEEE International Conference on Data Mining",
+    "family": "IEEE",
+    "kind": "conference",
+    "aliases": []
+  },
+  {
+    "abbr": "TPAMI",
+    "name": "IEEE Transactions on Pattern Analysis and Machine Intelligence",
+    "family": "IEEE",
+    "kind": "journal",
+    "aliases": [
+      "Pattern Analysis and Machine Intelligence"
+    ]
+  },
+  {
+    "abbr": "TKDE",
+    "name": "IEEE Transactions on Knowledge and Data Engineering",
+    "family": "IEEE",
+    "kind": "journal",
+    "aliases": [
+      "Knowledge and Data Engineering"
+    ]
+  },
+  {
+    "abbr": "TNNLS",
+    "name": "IEEE Transactions on Neural Networks and Learning Systems",
+    "family": "IEEE",
+    "kind": "journal",
+    "aliases": []
+  },
+  {
+    "abbr": "TBD",
+    "name": "IEEE Transactions on Big Data",
+    "family": "IEEE",
+    "kind": "journal",
+    "aliases": [
+      "IEEE Trans. Big Data",
+      "IEEE Transactions of Big Data",
+      "IEEE Transaction of Big Data",
+      "IEEE Transaction on Big Data"
+    ]
+  },
+  {
+    "abbr": "ECCV",
+    "name": "European Conference on Computer Vision",
+    "family": "Springer",
+    "kind": "conference",
+    "aliases": []
+  }
+]

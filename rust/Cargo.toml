@@ -1,0 +1,56 @@
+[package]
+name = "hx-bib-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust BibTeX and LaTeX research workbench"
+license = "MIT"
+authors = ["Haidong Xin <hdxin2002@gmail.com>"]
+default-run = "hx-bib-desktop"
+
+[lib]
+name = "hx_bib"
+
+[[bin]]
+name = "hx-bib-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "hx-bib-desktop"
+path = "src/desktop.rs"
+required-features = ["desktop"]
+
+[features]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-clipboard-manager", "dep:tauri-plugin-opener"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+indexmap = { version = "2", features = ["serde"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
+roxmltree = "0.20"
+scraper = "0.24"
+unicode-normalization = "0.1"
+log = "0.4"
+env_logger = "0.11"
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-clipboard-manager = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+
+[dependencies.tauri]
+version = "2"
+optional = true
+
+[build-dependencies.tauri-build]
+version = "2"
+optional = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "s"
