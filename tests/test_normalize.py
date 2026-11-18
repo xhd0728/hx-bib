@@ -1,6 +1,10 @@
 """Normalization tests: arXiv preset, venue rewriting, entry-type fixes."""
 
-from hx_bib.core.normalize import NormalizeOptions, normalize_document
+from hx_bib.core.normalize import (
+    NormalizeOptions,
+    entry_venue_presets,
+    normalize_document,
+)
 from hx_bib.core.parser import parse_bibtex
 
 
@@ -22,6 +26,24 @@ def test_ambiguous_tbd_conference_placeholder_is_not_rewritten_as_a_journal():
     assert doc.entries[0].type == "inproceedings"
     assert doc.entries[0].get("booktitle") == "TBD"
     assert not doc.entries[0].has("journal")
+
+
+def test_entry_venue_presets_excludes_placeholders_and_arxiv():
+    doc = parse_bibtex(
+        "@inproceedings{placeholder, booktitle={TBD}}\n"
+        "@article{journal, journal={TBD}}\n"
+        "@article{preprint, booktitle={CVPR}, journal={arXiv preprint arXiv:2411.13154}}"
+    )
+    assert [entry_venue_presets(entry) for entry in doc.entries] == [set(), {"TBD"}, set()]
+
+
+def test_venue_normalization_preserves_conflicting_destination_field():
+    doc, notes = _normalize(
+        "@article{conflict, journal={ICLR}, booktitle={Independent Workshop}}"
+    )
+    assert doc.entries[0].get("journal") == "ICLR"
+    assert doc.entries[0].get("booktitle") == "Independent Workshop"
+    assert notes == []
 
 
 def test_arxiv_journal_style():

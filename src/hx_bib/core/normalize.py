@@ -17,7 +17,7 @@ from typing import List, Optional
 
 from .identifiers import extract_arxiv_id, is_arxiv_like
 from .model import Document, Entry
-from .venues import CONFERENCE, JOURNAL, match_venue, render_venue
+from .venues import CONFERENCE, JOURNAL, Venue, match_venue, render_venue
 
 CONFERENCE_TYPES = {"inproceedings", "incollection", "conference"}
 
@@ -91,21 +91,34 @@ def normalize_arxiv(entry: Entry, opts: NormalizeOptions) -> List[str]:
 # ---------------------------------------------------------------------------
 # Venue normalization
 # ---------------------------------------------------------------------------
-def _rewrite_venue_field(entry: Entry, field_name: str, opts: NormalizeOptions) -> List[str]:
-    notes: List[str] = []
-    value = entry.get(field_name)
-    if not value or opts.venue_style == "keep":
-        return notes
+def _match_venue_field(entry: Entry, field_name: str) -> Optional[tuple[Venue, bool]]:
+    value = entry.get(field_name) or ""
     if field_name == "booktitle" and value.strip().strip("{}").strip().lower() == "tbd":
         # In a conference field this remains an ambiguous placeholder. Only
         # journal={TBD} or an explicit journal name identifies the IEEE title.
+        return None
+    return match_venue(value) if value else None
+
+
+def entry_venue_presets(entry: Entry) -> set[str]:
+    """Return presets eligible for venue normalization on this entry."""
+    if is_arxiv_like(entry) and extract_arxiv_id(entry):
+        return set()
+    return {match[0].abbr for field in _VENUE_FIELDS if (match := _match_venue_field(entry, field))}
+
+
+def _rewrite_venue_field(entry: Entry, field_name: str, opts: NormalizeOptions) -> List[str]:
+    notes: List[str] = []
+    if opts.venue_style == "keep":
         return notes
-    matched = match_venue(value)
+    matched = _match_venue_field(entry, field_name)
     if not matched:
         return notes
     venue, findings = matched
 
     if field_name == "booktitle" and venue.kind == JOURNAL:
+        if (entry.get("journal") or "").strip():
+            return notes
         # A journal listed as booktitle: move it to the journal field.
         if opts.fix_entry_types and entry.type in CONFERENCE_TYPES:
             old_type = entry.type
@@ -118,6 +131,8 @@ def _rewrite_venue_field(entry: Entry, field_name: str, opts: NormalizeOptions) 
         return notes
 
     if field_name == "journal" and venue.kind == CONFERENCE:
+        if (entry.get("booktitle") or "").strip():
+            return notes
         if opts.fix_entry_types and entry.type == "article":
             entry.type = "inproceedings"
             notes.append(f"{entry.key}: entry type article -> inproceedings ('{venue.abbr}')")
@@ -127,6 +142,7 @@ def _rewrite_venue_field(entry: Entry, field_name: str, opts: NormalizeOptions) 
         notes.append(f"{entry.key}: booktitle -> '{rendered}'")
         return notes
 
+    value = entry.get(field_name) or ""
     rendered = render_venue(venue, findings, opts.venue_style)
     if rendered != value.strip():
         entry.set(field_name, rendered)
