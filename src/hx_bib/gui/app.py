@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import difflib
 import html
 import inspect
@@ -85,6 +86,8 @@ _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
 _TABLE_UPLOAD_LIMIT = 2_000_000
 _CODE_PREVIEW_LINES = 500
+_LOGO_PATH = Path(__file__).with_name("assets") / "logo.png"
+_LOGO_DATA = "data:image/png;base64," + base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
 
 # Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
 # button and its hidden <input type=file> have no accessible names.  Patch them
@@ -149,7 +152,7 @@ def _splash_html(active: str = "tools") -> str:
     """A small loading overlay; never render a second, fake interface."""
     return """
 <div id="hx-splash" role="status" aria-label="Loading hx-bib">
-  <div class="hx-logo">hx</div><span>hx-bib</span>
+  <img class="hx-logo" src="__LOGO_DATA__" alt="hx-bib"><span>hx-bib</span>
 </div>
 <style>
 #hx-splash { position:fixed; inset:0; z-index:9999; background:#f6f7fb;
@@ -168,7 +171,7 @@ def _splash_html(active: str = "tools") -> str:
   }, 40);
 })();
 </script>
-"""
+""".replace("__LOGO_DATA__", _LOGO_DATA)
 
 
 def _head_html(description: str) -> str:
@@ -614,8 +617,7 @@ def _header(lang: str, active: str, on_lang: Callable, on_switch: Callable) -> d
             "hx-header-inner w-full max-w-6xl mx-auto px-4 items-center justify-between no-wrap gap-3"
         ):
             with ui.row().classes("items-center gap-3 no-wrap"):
-                with ui.element("div").classes("hx-logo"):
-                    ui.label("hx")
+                ui.image(_LOGO_DATA).classes("hx-logo").props('alt="hx-bib"')
                 with ui.column().classes("gap-0"):
                     with ui.element("h1").classes("m-0"):
                         ui.label("hx-bib").classes("hx-brand")
@@ -845,7 +847,7 @@ def run_gui(host: str = "127.0.0.1", port: int = 8080, show: bool = True, debug:
         logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
     register_pages()
     ui.run(
-        host=host, port=port, show=show, title="hx-bib", favicon="📚",
+        host=host, port=port, show=show, title="hx-bib", favicon=str(_LOGO_PATH),
         reload=False, show_welcome_message=False, uvicorn_logging_level="debug" if debug else "warning",
     )
 

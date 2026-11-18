@@ -49,7 +49,7 @@ body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, san
 .hx-header-inner > .hx-seg { justify-self:center; }
 .hx-header-inner > .hx-lang { justify-self:end; }
 .hx-logo { width:34px; height:34px; border-radius:10px; display:flex; align-items:center;
-           justify-content:center; background:linear-gradient(135deg,#4338ca,#7c3aed);
+           justify-content:center; background:#4f2dd4; overflow:hidden;
            color:#fff; font-weight:800; font-size:13px; letter-spacing:.02em;
            box-shadow:0 4px 10px -4px rgba(67,56,202,.55); flex:none; }
 .hx-brand { font-size:19px; line-height:1.1; }
