@@ -21,7 +21,7 @@ hx-bib gui --port 9000 --no-show
 Open [localhost:8080](http://127.0.0.1:8080) for the default port.
 
 1. Choose a `.bib` file, paste BibTeX, enter a local path, or try the example.
-2. Use **Preview formatting**, **Check**, or **Verify online** in the left rail. **More tools** includes cleaning, normalization, venue presets, and arXiv publication checks.
+2. All BibTeX tools are visible in the left rail. Formatting, cleaning, normalization, and validation update as you change settings. Select **Verify online** or **arXiv acceptance** to start an online check.
 3. Review both versions on the right. Expand **Compare and copy individual items** to copy one entry, or **Apply** to stage the preview. Use **Undo / Redo**, then copy or download the working copy.
 4. **File actions** contains history, reset, and **Save to file** for bibliographies opened from a local path. An arXiv check lists evidence; no evidence does not imply rejection.
 
