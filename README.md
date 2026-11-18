@@ -24,6 +24,7 @@ Open [localhost:8080](http://127.0.0.1:8080) for the default port.
 2. Choose **Format**, **Clean**, or **Normalize** → generate a preview → **Apply**.
 3. Use **Undo / Redo** to revise steps, then copy or download the working copy. **Save to file** writes back only when loaded from a local path.
 4. **Check** runs offline. **Verify** queries external citation services and supports pause, stop, and report download.
+5. **Venue presets** lets you search, filter, and copy names. To standardize all matching citations, choose a style → **Generate preview** → **Apply**.
 
 Use the header switch for **LaTeX tables**: paste a table or `.tex` file, set spacing and indentation, then format, compare, and copy or download. Reformat after changing the input or options.
 
