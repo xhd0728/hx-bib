@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hx-bib</title>
+    <link rel="stylesheet" href="app.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header id="titlebar">
+      <div class="brand">
+        <img class="logo" src="logo.png" alt="hx-bib" width="40" height="40" />
+        <div><strong>hx-bib</strong><small>BibTeX · LaTeX</small></div>
+      </div>
+      <nav aria-label="工具页切换">
+        <button id="nav-bib" class="selected">BibTeX 工具</button
+        ><button id="nav-table">LaTeX 表格</button>
+      </nav>
+      <button id="language">中 / EN</button>
+      <div id="window-controls" class="window-controls" hidden>
+        <button id="window-minimize" aria-label="最小化" title="最小化">
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M1 6h10" />
+          </svg>
+        </button>
+        <button
+          id="window-maximize"
+          aria-label="最大化或还原"
+          title="最大化或还原"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <rect x="1.5" y="1.5" width="9" height="9" />
+          </svg>
+        </button>
+        <button id="window-close" aria-label="关闭" title="关闭">
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="m1 1 10 10M11 1 1 11" />
+          </svg>
+        </button>
+      </div>
+    </header>
+    <main>
+      <div class="filebar">
+        <strong id="filename">hx-bib</strong><span id="entries"></span
+        ><span id="stage"></span>
+        <div class="file-actions">
+          <button id="undo">撤销</button><button id="redo">重做</button
+          ><button id="copy-all">复制全部</button
+          ><button id="save">下载 .bib</button
+          ><button id="choose-file">导入</button
+          ><input id="file" type="file" accept=".bib,.tex" hidden />
+        </div>
+      </div>
+      <section id="bib" class="workbench">
+        <aside>
+          <div class="settings" id="bib-settings"></div>
+          <footer>
+            <button id="apply" class="primary">应用</button
+            ><button id="arxiv">arXiv 录用核查</button
+            ><button id="retry-failed" hidden>重试失败项</button>
+            <p id="progress" role="status"></p>
+            <div id="run-controls" hidden>
+              <button id="pause">暂停</button><button id="stop">停止</button>
+            </div>
+          </footer>
+        </aside>
+        <div class="output">
+          <div class="resultbar">
+            <strong id="diff-title">条目差异</strong
+            ><span id="diff-count"></span>
+            <div class="seg">
+              <button id="diff-only" class="selected">仅显示差异</button
+              ><button id="diff-all">显示全部</button>
+            </div>
+          </div>
+          <div id="diff" class="results"></div>
+        </div>
+      </section>
+      <section id="table" class="workbench" hidden>
+        <aside>
+          <div class="settings">
+            <label id="table-label" for="table-input">LaTeX 源码</label
+            ><textarea id="table-input" spellcheck="false"></textarea>
+            <div id="table-settings" class="options"></div>
+            <button id="table-example">用示例</button>
+          </div>
+          <footer>
+            <button id="table-format" class="primary">格式化表格</button>
+          </footer>
+        </aside>
+        <div class="output">
+          <div class="resultbar">
+            <strong id="table-title">表格预览</strong
+            ><button id="table-copy">复制结果</button
+            ><button id="table-save">下载 .tex</button>
+          </div>
+          <p id="table-status" role="status"></p>
+          <div id="table-result" class="results"></div>
+        </div>
+      </section>
+    </main>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>
