@@ -35,9 +35,11 @@ import inspect
 import json
 import os
 import re
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from threading import Lock
+from typing import Callable, List, Optional
 
 from nicegui import events, ui
 
@@ -96,8 +98,8 @@ from .workspace import (
 
 SEVERITY_COLOR = {"error": "#dc2626", "warning": "#d97706", "info": "#2563eb"}
 VERDICT_COLOR = {
-    "FAIL": "#dc2626", "WARN": "#d97706", "MINOR": "#ca8a04",
-    "INFO": "#2563eb", "OK": "#16a34a",
+    "FAIL": "#b91c1c", "WARN": "#92400e", "MINOR": "#854d0e",
+    "INFO": "#1d4ed8", "OK": "#166534",
 }
 
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
@@ -614,11 +616,11 @@ def check_html(report, lang: str, flt: str = "ALL") -> str:
 
 
 def verify_html(results, verdict_filter: str, lang: str) -> str:
-    order = {"FAIL": 0, "WARN": 1, "MINOR": 2, "INFO": 3, "OK": 4}
+    order = {verdict: rank for rank, verdict in enumerate(VERDICT_COLOR)}
     shown = [r for r in results if verdict_filter in ("ALL", r.verdict)]
     shown.sort(key=lambda r: (order[r.verdict], r.entry.line))
     if not shown:
-        return f'<div class="hx-tab-note">{_esc(t(lang, "no_results"))}</div>'
+        return f'<div class="hx-tab-note">{_esc(t(lang, "verify_no_match"))}</div>'
     blocks = []
     for res in shown:
         color = VERDICT_COLOR[res.verdict]
@@ -633,11 +635,11 @@ def verify_html(results, verdict_filter: str, lang: str) -> str:
         if records:
             items = "".join(
                 f"<div><b style='color:#475569'>{_esc(r.source)}</b> · "
-                f"{_esc(r.title)[:140]} ({_esc(str(r.year or ''))})"
+                f"{_esc(r.title)}{f' ({_esc(r.year)})' if r.year else ''}"
                 f"{(' · ' + _esc(r.venue)) if r.venue and r.source != 'arXiv' else ''}</div>"
-                for r in records[:3]
+                for r in records
             )
-            evidence = f'<div class="hx-evidence">{items}</div>'
+            evidence = f'<div class="hx-evidence"><b>{_esc(t(lang, "verify_evidence"))}</b>{items}</div>'
         diff_block = ""
         ad = res.author_diff
         if ad:
@@ -651,19 +653,20 @@ def verify_html(results, verdict_filter: str, lang: str) -> str:
             diff_block = (
                 '<div class="hx-evidence"><b>'
                 + _esc(t(lang, "author_diff"))
-                + "</b><div style='display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px'>"
+                + '</b><div class="hx-verify-authors">'
                 f"<div><div class='hx-tab-note'>{_esc(t(lang, 'your_bib'))}</div>{names(ad['bib'])}</div>"
                 f"<div><div class='hx-tab-note'>{_esc(ad['source'])}</div>{names(ad['src'])}</div>"
                 "</div></div>"
             )
         blocks.append(
-            f'<div class="hx-result" style="border-left:4px solid {color}">'
-            f"<div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap'>"
+            f'<details class="hx-issue-card hx-verify-entry" style="border-left-color:{color}">'
+            f"<summary>"
             f'<span class="hx-chip" style="color:{color};background:{color}18">{_esc(label)}</span>'
-            f"<b style='font-family:ui-monospace,monospace'>{_esc(res.entry.key)}</b>"
-            f"<span class='hx-tab-note'>@{_esc(res.entry.type)}</span>"
-            f"<span style='font-size:13.5px;color:#334155'>{_entry_title(res.entry)}</span></div>"
-            f"<div style='margin-top:6px'>{issues}</div>{diff_block}{evidence}</div>"
+            f'<code class="hx-issue-key">{_esc(res.entry.key)}</code>'
+            f'<span class="hx-issue-meta">@{_esc(res.entry.type)} · L{res.entry.line}</span>'
+            f'<span class="material-icons hx-issue-caret" aria-hidden="true">expand_more</span>'
+            f'<span class="hx-verify-entry-title">{_esc(res.entry.get("title") or "")}</span>'
+            f'</summary><div class="hx-verify-details">{issues}{diff_block}{evidence}</div></details>'
         )
     return "".join(blocks)
 
@@ -2094,234 +2097,260 @@ def _panel_check(state: dict, lang: str, doc, refresh_body) -> None:
     run_button.on_click(run_check)
 
 # -- verify -----------------------------------------------------------------
-def _panel_verify(state: dict, lang: str, doc, refresh_body) -> None:
-    with ui.card().classes("hx-card w-full p-5 gap-4"):
-        _panel_head("travel_explore", t(lang, "tab_verify"), t(lang, "verify_note"))
-        ui.html(_steps_html(lang, ["steps_verify_run", "steps_verify_review",
-                                   "steps_verify_result"]))
-        with ui.row().classes("gap-4 items-end flex-wrap"):
-            only = _draft(ui.input(t(lang, "only_keys")).classes("w-80"),
+def _panel_verify(state: dict, lang: str, doc, _refresh_body) -> None:
+    def view_report() -> None:
+        if not _IN_SIM:
+            ui.run_javascript("""
+                const results = document.querySelector('[data-hx-scroll="preview-verify"]');
+                if (results) {
+                    results.scrollTop = 0;
+                    results.scrollIntoView({block: 'start', behavior: 'instant'});
+                }
+            """)
+
+    with ui.element("div").classes("hx-operation-grid w-full"):
+        with ui.card().classes("hx-card hx-options w-full p-5 gap-3").props(
+            'data-hx-scroll="options-verify"'
+        ):
+            _panel_head("travel_explore", t(lang, "tab_verify"), t(lang, "verify_note"))
+            ui.html(_steps_html(lang, ["steps_verify_scope", "steps_verify_run", "steps_verify_result"]))
+            ui.label(t(lang, "verify_scope")).classes("hx-optlabel")
+            ui.label(t(lang, "verify_scope_hint").format(n=len(doc.entries))).classes("hx-tab-note")
+            only = _draft(ui.input(t(lang, "only_keys")).props("outlined dense").mark("verify-keys"),
                           state, "verify_keys")
-            delay = _bind(ui.number(
-                t(lang, "delay"), value=float(_opt(state, "verify", "delay")),
-                min=0.0, step=0.1,
-            ).classes("w-32"), state, "verify", "delay")
-            workers = _bind(ui.number(
-                t(lang, "workers"), value=int(_opt(state, "verify", "workers") or 1),
-                min=1, max=8, step=1,
-            ).classes("w-32").tooltip(t(lang, "workers_hint")),
-                state, "verify", "workers")
-            use_cache = _bind(ui.switch(t(lang, "use_cache"),
-                                        value=bool(_opt(state, "verify", "use_cache"))),
+            run_button = ui.button(t(lang, "start_verify"), icon="travel_explore").props(
+                "unelevated color=primary no-caps"
+            ).mark("verify-start")
+            with ui.element("div").classes("hx-verify-controls w-full"):
+                pause_button = ui.button(t(lang, "pause"), icon="pause").props(
+                    "outline color=primary no-caps"
+                ).mark("verify-pause")
+                stop_button = ui.button(t(lang, "stop"), icon="stop").props(
+                    "outline color=red-7 no-caps"
+                ).mark("verify-stop")
+            view_button = ui.button(t(lang, "verify_show_results"), icon="arrow_forward",
+                                    on_click=view_report).props(
+                "outline color=primary no-caps"
+            ).mark("verify-show-results")
+            ui.label(t(lang, "verify_controls_hint")).classes("hx-tab-note")
+            ui.separator()
+            ui.label(t(lang, "verify_network")).classes("hx-optlabel")
+            ui.label(t(lang, "verify_network_hint")).classes("hx-tab-note")
+            with ui.element("div").classes("hx-verify-controls w-full"):
+                delay = _bind(ui.number(
+                    t(lang, "delay"), value=float(_opt(state, "verify", "delay")), min=0, step=0.1,
+                ).props("outlined dense"), state, "verify", "delay")
+                workers = _bind(ui.number(
+                    t(lang, "workers"), value=int(_opt(state, "verify", "workers")),
+                    min=1, max=8, step=1, precision=0,
+                ).props("outlined dense").tooltip(t(lang, "workers_hint")), state, "verify", "workers")
+            use_cache = _bind(ui.switch(t(lang, "use_cache"), value=bool(_opt(state, "verify", "use_cache"))),
                               state, "verify", "use_cache")
 
-        progress_bar = ui.linear_progress(value=0, show_value=False).classes("w-full")
-        progress_label = ui.label(t(lang, "state_idle")).classes("hx-tab-note")
-        with ui.row().classes("items-center gap-2"):
-            run_button = ui.button(t(lang, "start_verify"), icon="travel_explore").props(
-                "unelevated color=primary"
-            ).mark("verify-start")
-            pause_button = ui.button(t(lang, "pause"), icon="pause").props(
-                "outline"
-            ).mark("verify-pause")
-            stop_button = ui.button(t(lang, "stop"), icon="stop").props(
-                "outline color=red-7"
-            ).mark("verify-stop")
-        pause_button.set_enabled(state["progress"]["running"])
-        stop_button.set_enabled(state["progress"]["running"])
-        _busy(run_button, state["progress"]["running"])
-        if state["progress"]["paused"]:
-            pause_button.set_text(t(lang, "resume"))
-
-        filter_row = ui.row().classes("gap-2 items-center")
-        results_area = ui.column().classes("w-full")
-
-        def show_results() -> None:
-            results = state["verify_results"]
-            results_area.clear()
-            filter_row.clear()
-            if not results:
-                with results_area:
-                    with ui.element("div").classes("hx-empty"):
-                        ui.label(t(lang, "verify_empty"))
-                return
-            counts: Dict[str, int] = {}
-            for res in results:
-                counts[res.verdict] = counts.get(res.verdict, 0) + 1
-            with filter_row:
-                def pick(value: str) -> None:
-                    state["verify_filter"] = value
-                    show_results()
-
-                ui.button(f"ALL {len(results)}", on_click=lambda: pick("ALL")).props(
-                    "dense flat" if state["verify_filter"] != "ALL" else "dense unelevated"
+        with ui.column().classes("hx-preview w-full gap-2").props('data-hx-scroll="preview-verify"'):
+            with ui.card().classes("hx-card w-full p-5 gap-3"):
+                _panel_head("rule", t(lang, "verify_results"), t(lang, "verify_results_note"))
+                status = ui.label("").classes("hx-tab-note hx-verify-status").props(
+                    'role=status aria-live=polite'
+                ).mark("verify-status")
+                progress_bar = ui.linear_progress(value=0, show_value=False).classes("w-full").props(
+                    f'aria-label="{t(lang, "steps_verify_run")}"'
                 )
-                for verdict in ("FAIL", "WARN", "MINOR", "INFO", "OK"):
-                    if not counts.get(verdict):
-                        continue
-                    color = VERDICT_COLOR[verdict]
-                    active = state["verify_filter"] == verdict
-                    button = ui.button(
-                        f"{t(lang, 'verdict_' + verdict)} {counts[verdict]}",
-                        on_click=lambda v=verdict: pick(v),
-                    ).props(
-                        f"dense {'unelevated' if active else 'flat'} "
-                        f"color={'red' if verdict == 'FAIL' else 'orange' if verdict == 'WARN' else 'blue-grey'}"
-                    )
-                    button.style(f"color:{color}")
+                with ui.element("div").classes("hx-check-metrics w-full"):
+                    summaries = [
+                        ("verify_attention", "warning_amber", "WARN"),
+                        ("verdict_INFO", "help_outline", "INFO"),
+                        ("verdict_OK", "check_circle_outline", "OK"),
+                    ]
+                    counters = []
+                    for label, icon, verdict in summaries:
+                        with ui.element("div").classes("hx-check-metric").style(
+                            f"--metric-color:{VERDICT_COLOR[verdict]}"
+                        ):
+                            ui.icon(icon).props("aria-hidden=true")
+                            counters.append(ui.label("—").classes("hx-metric-number"))
+                            ui.label(t(lang, label)).classes("hx-metric-label")
+                filters = ui.select({"ALL": t(lang, "check_all")}, value="ALL", label=t(lang, "verify_filter")).props(
+                    "outlined dense options-dense"
+                ).classes("w-full").mark("verify-filter")
+                with ui.element("div").classes("hx-check-issues hx-verify-list w-full").props(
+                    'data-hx-scroll="verify-issues"'
+                ):
+                    result_area = ui.html("").classes("w-full").mark("verify-list")
+                with ui.row().classes("hx-preview-actions w-full items-center gap-2"):
+                    ui.label(t(lang, "verify_readonly")).classes("hx-tab-note")
+                    ui.space()
+                    download_button = ui.button(t(lang, "download_report"), icon="download").props(
+                        "outline color=primary no-caps"
+                    ).mark("verify-download")
 
-                def download_report() -> None:
-                    stem = Path(state["name"]).stem or "bibliography"
-                    ui.download(
-                        build_verify_html(results, state["name"] or "bibliography")
-                        .encode("utf-8"),
-                        f"{stem}.report.html",
-                    )
+    rendered = None
+    last_status = None
 
-                ui.button(t(lang, "download_report"), icon="download",
-                          on_click=download_report).props(
-                    "dense outline"
-                ).style("margin-left:auto")
-            with results_area:
-                ui.html(verify_html(results, state["verify_filter"], lang))
+    def pick(e) -> None:
+        results = state["verify_results"]
+        if results and e.value in filters.options and e.value != state["verify_filter"]:
+            state["verify_filter"] = e.value
+            result_area.set_content(verify_html(results, e.value, lang))
 
-        show_results()
+    def sync_view() -> None:
+        nonlocal rendered, last_status
+        if status.is_deleted:
+            return
+        progress = state["progress"]
+        control = state["run_control"]
+        running = control is not None
+        stopping = running and control.cancelled.is_set()
+        paused = running and progress["paused"]
+        results = state["verify_results"]
+        outcome = progress.get("outcome")
+        done, total = progress["done"], progress["total"]
+        snapshot = (running, stopping, paused, done, total, outcome, id(results))
+        if snapshot == last_status:
+            return
+        last_status = snapshot
+        _busy(run_button, running)
+        pause_button.set_enabled(running and not stopping)
+        pause_button.set_text(t(lang, "resume" if paused else "pause"))
+        pause_button.set_icon("play_arrow" if paused else "pause")
+        stop_button.set_enabled(running and not stopping)
+        view_button.set_enabled(bool(results))
+        download_button.set_enabled(bool(results))
+        for widget in (only, delay, workers, use_cache):
+            widget.set_enabled(not running)
+        progress_bar.set_value(done / total if total else 0)
+        if running:
+            phase = "verify_stopping" if stopping else "state_paused" if paused else "state_running"
+            status.set_text(f"{done}/{total} · {t(lang, phase)}")
+        elif outcome == "failed":
+            status.set_text(t(lang, "verify_failed"))
+        elif outcome == "stopped":
+            status.set_text(t(lang, "stopped_partial").format(n=len(results or [])))
+        elif results is not None:
+            status.set_text(t(lang, "verify_done").format(n=len(results)))
+        else:
+            status.set_text(t(lang, "verify_ready").format(n=len(doc.entries)))
 
-        async def run_verify() -> None:
-            if state["progress"]["running"]:
+        report_view = (id(results), running, outcome)
+        if report_view == rendered:
+            return
+        rendered = report_view
+        counts = Counter(result.verdict for result in results or [])
+        totals = (sum(counts[key] for key in ("FAIL", "WARN", "MINOR")), counts["INFO"], counts["OK"])
+        for label, count in zip(counters, totals):
+            label.set_text(str(count) if results is not None else "—")
+        options = {"ALL": t(lang, "check_all")}
+        if results:
+            options["ALL"] += f" · {len(results)}"
+            options.update({key: f'{t(lang, "verdict_" + key)} · {counts[key]}' for key in VERDICT_COLOR})
+        filters.set_options(options, value=state["verify_filter"])
+        filters.set_enabled(bool(results))
+        if results:
+            result_area.set_content(verify_html(results, state["verify_filter"], lang))
+        else:
+            message = "verify_pending" if running else "verify_empty"
+            if outcome == "stopped":
+                message = "verify_no_completed"
+            title = (f'<div class="hx-panel-title">{_esc(t(lang, "verify_empty_title"))}</div>'
+                     if not running and not outcome else "")
+            result_area.set_content(
+                '<div class="hx-empty hx-verify-empty">'
+                '<span class="material-icons" aria-hidden="true">travel_explore</span>'
+                f'{title}<div class="hx-tab-note">{_esc(t(lang, message))}</div></div>'
+            )
+
+    async def run_verify() -> None:
+        if state["run_control"] is not None:
+            return
+        before, revision = state["text"], state["revision"]
+        keys = set((only.value or "").replace(",", " ").split())
+        entries = list(doc.entries)
+        if keys:
+            missing = keys - {entry.key for entry in entries}
+            if missing:
+                ui.notify(t(lang, "unknown_keys").format(keys=", ".join(sorted(missing))), type="warning")
                 return
-            before, revision = state["text"], state["revision"]
-            keys = [key for key in re.split(r"[,\s]+", (only.value or "").strip()) if key]
-            entries = list(parse_bibtex(before).entries)
-            if keys:
-                missing = set(keys) - {e.key for e in entries}
-                if missing:
-                    ui.notify(t(lang, "unknown_keys").format(keys=", ".join(sorted(missing))),
-                              type="warning")
-                    return
-                entries = [e for e in entries if e.key in set(keys)]
-            if not entries:
-                ui.notify(t(lang, "no_results"), type="warning", position="bottom-right")
-                return
+            entries = [entry for entry in entries if entry.key in keys]
+        if not entries:
+            ui.notify(t(lang, "no_results"), type="warning")
+            return
 
-            n_workers = max(1, min(8, int(workers.value or 1)))
-            control = RunControl()
-            state["run_control"] = control
-            progress = state["progress"] = {
-                "done": 0, "total": len(entries), "key": "",
-                "running": True, "paused": False,
-            }
-            state["verify_results"] = None
-            results_area.clear()
-            _busy(run_button, True)
-            pause_button.enable()
-            stop_button.enable()
-            pause_button.set_text(t(lang, "pause"))
+        n_workers = max(1, min(8, int(workers.value or 1)))
+        wait = max(0.0, float(delay.value if delay.value is not None else 0.8))
+        use_cached = bool(use_cache.value)
+        control = RunControl()
+        progress = {"done": 0, "total": len(entries), "key": "", "running": True, "paused": False}
+        state.update(run_control=control, progress=progress, verify_results=None, verify_filter="ALL")
+        sync_view()
 
-            net = Net(delay=max(0.0, float(delay.value if delay.value is not None else 0.8)),
-                      use_cache=bool(use_cache.value))
+        progress_lock = Lock()
 
-            def cb(done: int, total: int, citekey: str) -> None:
-                progress.update(done=done, total=total, key=citekey)
+        def update_progress(done: int, total: int, citekey: str) -> None:
+            with progress_lock:
+                if done > progress["done"]:
+                    progress.update(done=done, total=total, key=citekey)
 
-            def work() -> list:
-                prefetch_arxiv(net, entries)
-                results = verify_entries(net, entries, progress=cb,
-                                         workers=n_workers, control=control)
-                pending = [r for r in results if r.any_error and r.verdict != "OK"]
-                if pending and not control.cancelled.is_set():
-                    results = retry_failed(net, results, control=control)
-                return results
+        def work() -> list:
+            net = Net(delay=wait, use_cache=use_cached)
+            if not control.wait_if_paused():
+                return []
+            prefetch_arxiv(net, entries)
+            results = verify_entries(net, entries, progress=update_progress, workers=n_workers, control=control)
+            if not control.cancelled.is_set() and any(r.any_error and r.verdict != "OK" for r in results):
+                results = retry_failed(net, results, control=control)
+            return results
 
-            try:
-                results = await asyncio.to_thread(work)
-            except Exception as exc:
-                if preview_is_current(state, revision, before):
-                    ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
-                return
-            finally:
-                progress["running"] = False
-                progress["paused"] = False
-                if state["run_control"] is control:
-                    state["run_control"] = None
-                if not run_button.is_deleted:
-                    _busy(run_button, False)
-                    pause_button.disable()
-                    stop_button.disable()
-                    pause_button.set_text(t(lang, "pause"))
+        try:
+            results = await asyncio.to_thread(work)
+            outcome = "stopped" if control.cancelled.is_set() else "completed"
+        except Exception as exc:
+            results, outcome = None, "failed"
+            if state["run_control"] is control:
+                ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
+        finally:
+            if state["run_control"] is control:
+                progress.update(running=False, paused=False)
+                state["run_control"] = None
+        if not preview_is_current(state, revision, before) or state["progress"] is not progress:
+            return
+        progress.update(outcome=outcome, done=len(results) if results is not None else progress["done"])
+        state["verify_results"] = results
+        sync_view()
 
-            if not preview_is_current(state, revision, before):
-                return
-            state["verify_results"] = results
-            state["verify_filter"] = "ALL"
-            if control.cancelled.is_set():
-                ui.notify(t(lang, "stopped_partial").format(n=len(results)),
-                          type="warning", position="bottom-right")
-            else:
-                counts: Dict[str, int] = {}
-                for res in results:
-                    counts[res.verdict] = counts.get(res.verdict, 0) + 1
-                color = "negative" if counts.get("FAIL") else "positive"
-                ui.notify(
-                    t(lang, "verify_done").format(
-                        n=len(results),
-                        bad=counts.get("FAIL", 0) + counts.get("WARN", 0),
-                    ),
-                    type=color, position="bottom-right",
-                )
-            show_results_safe()
+    def toggle_pause() -> None:
+        control = state["run_control"]
+        if control is None or control.cancelled.is_set():
+            return
+        if control.paused.is_set():
+            control.resume()
+        else:
+            control.pause()
+        state["progress"]["paused"] = control.paused.is_set()
+        sync_view()
 
-        def show_results_safe() -> None:
-            if not results_area.is_deleted:
-                show_results()
-            elif state["mode"] == "tools" and state["tab"] == "verify":
-                refresh_body.refresh()
+    def stop_run() -> None:
+        control = state["run_control"]
+        if control is not None:
+            control.cancel()
+            state["progress"]["paused"] = False
+            sync_view()
 
-        run_button.on_click(run_verify)
+    def download_report() -> None:
+        results = state["verify_results"]
+        if results and state["run_control"] is None:
+            stem = Path(state["name"]).stem or "bibliography"
+            ui.download(
+                build_verify_html(results, state["name"] or "bibliography").encode("utf-8"),
+                f"{stem}.report.html",
+            )
 
-        def toggle_pause() -> None:
-            control = state["run_control"]
-            if control is None:
-                return
-            if control.paused.is_set():
-                control.resume()
-                state["progress"]["paused"] = False
-                pause_button.set_text(t(lang, "pause"))
-            else:
-                control.pause()
-                state["progress"]["paused"] = True
-                pause_button.set_text(t(lang, "resume"))
-
-        def stop_run() -> None:
-            control = state["run_control"]
-            if control is not None:
-                control.cancel()
-
-        pause_button.on_click(toggle_pause)
-        stop_button.on_click(stop_run)
-
-        # Progress polling (network work runs in worker threads).
-        def poll_progress() -> None:
-            progress = state["progress"]
-            pause_button.set_enabled(progress["running"])
-            stop_button.set_enabled(progress["running"])
-            pause_button.set_text(t(lang, "resume" if progress["paused"] else "pause"))
-            _busy(run_button, progress["running"])
-            if progress["total"]:
-                progress_bar.set_value(progress["done"] / progress["total"])
-            if progress["running"]:
-                state_label = t(lang, "state_paused" if progress["paused"] else "state_running")
-                progress_label.set_text(
-                    f"{progress['done']}/{progress['total']} · {state_label}"
-                    + (f" · {progress['key']}" if progress.get("key") else "")
-                )
-            elif state["verify_results"] is not None:
-                progress_label.set_text(t(lang, "state_idle"))
-            else:
-                progress_bar.set_value(0)
-                progress_label.set_text(t(lang, "state_idle"))
-
-        ui.timer(0.4, poll_progress)
+    filters.on_value_change(pick)
+    run_button.on_click(run_verify)
+    pause_button.on_click(toggle_pause)
+    stop_button.on_click(stop_run)
+    download_button.on_click(download_report)
+    sync_view()
+    ui.timer(0.25, sync_view)
 
 
 # -- venues -----------------------------------------------------------------

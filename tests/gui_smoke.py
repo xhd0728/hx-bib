@@ -258,11 +258,13 @@ async def main() -> None:
         saved = gui_app._new_state, gui_app.prefetch_arxiv, gui_app.verify_entries
         state = gui_app._new_state()
         started, release = threading.Event(), threading.Event()
+        requested = []
 
         def gated_verify(net, entries, **kwargs):
+            requested.append([entry.key for entry in entries])
             started.set()
             assert release.wait(5)
-            return [CheckResult(entry=entries[0], verdict="FAIL")]
+            return [CheckResult(entry=entries[0], verdict="FAIL", issues=[("FAIL", "Title mismatch")])]
 
         gui_app._new_state = lambda: state
         gui_app.prefetch_arxiv = lambda *args: None
@@ -273,8 +275,19 @@ async def main() -> None:
             await settle()
             user.find(marker="tab-verify").click()
             await settle()
+            await user.should_see("尚未开始核查")
+            assert not next(iter(user.find(marker="verify-download").elements)).enabled
+            keys = user.find(marker="verify-keys")
+            keys.type("missing-citekey")
+            user.find(marker="verify-start").click()
+            await user.should_see("以下引用 key 不存在：missing-citekey")
+            assert not started.is_set()
+            entry = gui_app.parse_bibtex(state["text"]).entries[0]
+            keys.clear()
+            keys.type(entry.key)
             user.find(marker="verify-start").click()
             assert await asyncio.to_thread(started.wait, 5)
+            assert requested == [[entry.key]]
             user.find(marker="verify-pause").click()
             await settle()
             assert state["progress"]["paused"]
@@ -284,6 +297,34 @@ async def main() -> None:
             await settle()
             assert next(iter(user.find(marker="verify-pause").elements)).enabled
             await user.should_see("继续")
+            user.find(marker="verify-pause").click()
+            await settle()
+            assert not state["progress"]["paused"]
+            user.find(marker="verify-stop").click()
+            await user.should_see("正在停止")
+            assert not next(iter(user.find(marker="verify-stop").elements)).enabled
+            start_button = next(iter(user.find(marker="verify-start").elements))
+            filter_widget = next(iter(user.find(marker="verify-filter").elements))
+            release.set()
+            await user.should_see("已停止，仅显示已完成的 1 条结果", retries=20)
+            await user.should_see("Title mismatch")
+            assert next(iter(user.find(marker="verify-download").elements)).enabled
+            assert next(iter(user.find(marker="verify-show-results").elements)).enabled
+            filter_widget.set_value("OK")
+            await user.should_see("当前筛选下没有条目")
+            assert next(iter(user.find(marker="verify-start").elements)) is start_button
+            assert next(iter(user.find(marker="verify-filter").elements)) is filter_widget
+            user.find(marker="tab-check").click()
+            await settle()
+            user.find(marker="tab-verify").click()
+            await user.should_see("当前筛选下没有条目")
+            print("✓ verification scope, pause/resume/stop, partial results and persistent filters")
+
+            started.clear()
+            release.clear()
+            user.find(marker="verify-start").click()
+            assert await asyncio.to_thread(started.wait, 5)
+            assert not next(iter(user.find(marker="verify-download").elements)).enabled
             old_control = state["run_control"]
             user.find(marker="tab-format").click()
             await settle()
