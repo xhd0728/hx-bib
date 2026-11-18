@@ -1,0 +1,140 @@
+name: Rust clients
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 20 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-clients-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+      publish: ${{ steps.release.outputs.publish }}
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          publish=false
+          build=true
+          if [[ "$GITHUB_EVENT_NAME" == schedule || "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            publish=true
+            previous="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,isPrerelease --jq '[.[] | select(.isDraft == false and (.tagName | startswith("rust-")))] | .[0].tagName // ""')"
+            if [[ -n "$previous" && "$(git rev-list -n 1 "$previous")" == "$sha" ]]; then
+              publish=false
+              build=false
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=rust-$(TZ=Asia/Shanghai date +%Y%m%d)-${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
+            bundles: nsis
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: macos-arm64
+            bundles: app,dmg
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt,clippy
+      - name: Test Python and native parity
+        run: |
+          python -m pip install -e '..[dev]'
+          python -m pytest ../tests -q
+          python tests/verify_fixtures.py --check
+          cargo fmt --all -- --check
+          cargo test --locked --target ${{ matrix.target }}
+          cargo build --locked --target ${{ matrix.target }} --release --bin hx-bib-rs
+          binary="target/${{ matrix.target }}/release/hx-bib-rs"
+          if [[ "${{ runner.os }}" == Windows ]]; then binary="$binary.exe"; fi
+          python tests/parity.py --binary "$binary"
+          python tests/cli_parity.py --binary "$binary"
+      - name: Build desktop
+        run: |
+          python -c 'import json,os; json.dump({"version":"0.1." + os.environ["GITHUB_RUN_NUMBER"]},open("tauri.release.json","w"))'
+          npx --yes @tauri-apps/cli@2 build --features desktop --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config tauri.release.json
+      - name: Package portable CLI and desktop installers
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: python scripts/package.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hx-bib-${{ matrix.platform }}
+          path: rust/dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish both platforms together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --json isDraft --jq .isDraft > /tmp/release-draft 2>/dev/null; then
+            [[ "$(cat /tmp/release-draft)" == true ]]
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --target "$SHA" --title "hx-bib $TAG" --generate-notes --draft
+          fi
+          gh release edit "$TAG" --draft=false --latest
