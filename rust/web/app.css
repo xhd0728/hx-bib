@@ -167,15 +167,36 @@ main {
 .filebar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  flex: none;
+  min-width: 0;
+  min-height: 51px;
   gap: 10px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
 }
+#filename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#entries,
+#stage {
+  flex: none;
+  white-space: nowrap;
+}
 .file-actions {
+  flex: none;
   margin-left: auto;
   display: flex;
   gap: 4px;
+}
+.file-actions button {
+  white-space: nowrap;
+}
+#table-settings {
+  padding: 0;
 }
 .workbench {
   flex: 1;
