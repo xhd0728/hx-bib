@@ -286,6 +286,8 @@ html, body { height:100%; overflow:hidden; }
 .hx-file-actions { flex-wrap:wrap; }
 .hx-publication-item { padding:8px 10px; background:#f8fafc; border:1px solid var(--hx-line);
                        border-radius:8px; margin-top:6px; overflow-wrap:anywhere; }
+.hx-publication-link { display:inline-block; margin-inline-start:10px; color:var(--hx-brand-ink);
+                       font-weight:600; text-decoration:underline; }
 .hx-compact-upload .q-uploader__header-content { padding:6px 10px; min-height:38px; }
 .hx-compact-upload .q-uploader__title { font-size:13px; }
 .hx-workbench-grid { display:grid; grid-template-columns:minmax(255px,290px) minmax(0,1fr);

@@ -1,9 +1,21 @@
 """Offline checks for publication evidence and ambiguous author comments."""
 
+import json
+import xml.etree.ElementTree as ET
+
 import pytest
 
+from hx_bib.core.parser import parse_bibtex
+from hx_bib.verify import checker
 from hx_bib.verify.checker import _arxiv_publication
-from hx_bib.verify.sources import SourceRecord
+from hx_bib.verify.sources import (
+    SourceRecord,
+    _arxiv_entry_to_record,
+    arxiv_batch,
+    arxiv_lookup,
+    crossref_publication,
+    openreview_publication,
+)
 
 
 @pytest.mark.parametrize(("note", "status"), [
@@ -38,3 +50,95 @@ def test_preprint_only_and_network_error_are_not_proof_of_publication():
     )
     assert _arxiv_publication(arxiv, dblp)[0] == "not_found"
     assert _arxiv_publication(arxiv, SourceRecord("DBLP", False, error=True))[0] == "unavailable"
+
+
+TITLE = "ExampleBench: A Reliable Benchmark"
+REFERENCE = SourceRecord("arXiv", True, title=TITLE, authors=["team", "doe", "singh"], venue="arXiv")
+
+
+class StubNet:
+    def __init__(self, body, status=200):
+        self.body = json.dumps(body)
+        self.status = status
+        self.requests = []
+
+    def get(self, url, **_kwargs):
+        self.requests.append(url)
+        return self.status, self.body
+
+
+def test_arxiv_atom_reads_namespaced_journal_and_comment():
+    entry = ET.fromstring(
+        '<entry xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">'
+        '<title>Example paper</title><arxiv:journal_ref>Example Journal 2025</arxiv:journal_ref>'
+        '<arxiv:comment>Accepted at Example Conference</arxiv:comment></entry>'
+    )
+    record = _arxiv_entry_to_record(entry)
+    assert record and record.venue == "Example Journal 2025"
+    assert "Accepted at Example Conference" in record.note
+
+
+def test_arxiv_empty_prefetch_does_not_hide_abs_page_error(monkeypatch):
+    net = StubNet({})
+    net.arxiv_prefetch = {"2502.14739": None}
+    from hx_bib.verify import sources
+
+    monkeypatch.setattr(sources, "arxiv_abs_lookup", lambda *_: SourceRecord("arXiv", False, error=True))
+    assert arxiv_lookup(net, "2502.14739").error
+
+
+def test_failed_batch_marks_each_id_for_direct_fallback():
+    net = StubNet({}, status=503)
+    assert arxiv_batch(net, ["2502.14739", "2502.14740"]) == {"2502.14739": None, "2502.14740": None}
+    assert len(net.requests) == 1
+
+
+def test_openreview_search_uses_a_public_venue_decision_not_a_submission():
+    accepted = {
+        "id": "paper", "forum": "paper", "domain": "Example/2025/Conference", "pdate": 1758215815218,
+        "content": {
+            "title": {"value": TITLE}, "authors": {"value": ["Jane Doe", "Alex Singh"]},
+            "venueid": {"value": "Example/2025/Conference"}, "venue": {"value": "Example 2025 poster"},
+        },
+    }
+    submission = {
+        **accepted, "id": "submission", "forum": "submission", "pdate": None,
+        "content": {**accepted["content"], "venueid": {"value": "Example/2025/Conference/Submission"}},
+    }
+    reply = {**accepted, "id": "reply"}
+    net = StubNet({"notes": [submission, reply, accepted]})
+    record = openreview_publication(net, REFERENCE)
+    assert record.url == "https://openreview.net/forum?id=paper"
+    assert _arxiv_publication(REFERENCE, record) == ("accepted", "OpenReview · Example 2025 poster")
+    assert not openreview_publication(StubNet({"notes": [submission, reply]}), REFERENCE).found
+
+
+def test_crossref_search_skips_preprints_and_mismatched_authors():
+    def work(kind, author, doi):
+        return {
+            "title": [TITLE], "type": kind, "author": [{"family": author}],
+            "DOI": doi, "container-title": ["Example Conference"], "URL": f"https://doi.org/{doi}",
+        }
+
+    net = StubNet({"message": {"items": [
+        work("posted-content", "Doe", "10.1000/preprint"),
+        work("journal-article", "Nobody", "10.1000/wrong"),
+        work("proceedings-article", "Singh", "10.1000/right"),
+    ]}})
+    record = crossref_publication(net, REFERENCE)
+    assert record.doi == "10.1000/right"
+    assert _arxiv_publication(REFERENCE, record)[0] == "record"
+
+
+def test_arxiv_id_search_survives_abbreviated_bib_title_and_provider_error(monkeypatch):
+    entry = parse_bibtex("@misc{paper, title={ExampleBench}, eprint={2502.14739}, archivePrefix={arXiv}}").entries[0]
+    record = SourceRecord(
+        "Crossref", True, title=TITLE, authors=["doe"], venue="Example Journal",
+        publication_type="journal-article", url="https://doi.org/10.1000/right",
+    )
+    monkeypatch.setattr(checker, "arxiv_lookup", lambda *_: REFERENCE)
+    monkeypatch.setattr(checker, "openreview_publication", lambda *_: SourceRecord("OpenReview", False, error=True))
+    monkeypatch.setattr(checker, "crossref_publication", lambda *_: record)
+    result = checker.verify_entry(StubNet({}), entry)
+    assert result.publication == ("record", "Crossref · Example Journal")
+    assert result.publication_url == record.url

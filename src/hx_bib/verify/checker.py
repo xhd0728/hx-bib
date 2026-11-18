@@ -26,10 +26,14 @@ from .sources import (
     arxiv_batch,
     arxiv_lookup,
     crossref_lookup,
+    crossref_publication,
     crossref_search,
+    dblp_publication,
     dblp_search,
     doi_resolves,
     openreview_lookup,
+    openreview_publication,
+    publication_matches,
     url_check,
 )
 from .textutil import (
@@ -70,6 +74,7 @@ class CheckResult:
     author_diff: Optional[dict] = None
     any_error: bool = False
     publication: Optional[Tuple[str, str]] = None
+    publication_url: Optional[str] = None
 
     def worst_severity(self) -> str:
         if not self.issues:
@@ -234,13 +239,25 @@ def _venue_check(entry: Entry, records: Dict[str, SourceRecord]) -> Optional[Tup
 # ---------------------------------------------------------------------------
 # Per-entry verification
 # ---------------------------------------------------------------------------
-def _arxiv_publication(arxiv: SourceRecord, dblp: Optional[SourceRecord]) -> Tuple[str, str]:
-    if dblp and (
-        dblp.found and dblp.publication_type in {"Conference and Workshop Papers", "Journal Articles"}
-        and title_ratio(arxiv.title, dblp.title) >= 0.95
-        and arxiv.authors and any(namekey(arxiv.authors[0]) == namekey(author) for author in dblp.authors)
-    ):
-        return "record", f"DBLP · {dblp.venue} {dblp.year or ''}".strip()
+def _indexed_publication(arxiv: SourceRecord, records) -> Optional[SourceRecord]:
+    publication_types = {
+        "Crossref": {"journal-article", "proceedings-article"},
+        "DBLP": {"Conference and Workshop Papers", "Journal Articles"},
+        "OpenReview": {"accepted"},
+    }
+    return next((
+        record for record in records if record and record.found and record.venue
+        and record.publication_type in publication_types.get(record.source, ())
+        and publication_matches(arxiv, record)
+    ), None)
+
+
+def _arxiv_publication(arxiv: SourceRecord, *records: Optional[SourceRecord]) -> Tuple[str, str]:
+    indexed = _indexed_publication(arxiv, records)
+    if indexed:
+        year = f" {indexed.year}" if indexed.year and indexed.year not in indexed.venue else ""
+        status = "accepted" if indexed.source == "OpenReview" else "record"
+        return status, f"{indexed.source} · {indexed.venue}{year}"
     if arxiv.venue.strip().lower() not in {"", "arxiv", "corr"}:
         return "reference", arxiv.venue
     comment_match = re.search(r"\bcomment:\s*(.+)", arxiv.note or "", re.I)
@@ -256,7 +273,8 @@ def _arxiv_publication(arxiv: SourceRecord, dblp: Optional[SourceRecord]) -> Tup
         )
         if positive and not negative and not other_subject:
             return "comment", comment[:240]
-    return ("unavailable" if dblp and dblp.error else "not_found"), ""
+    unavailable = list(dict.fromkeys(record.source for record in records if record and record.error))
+    return ("unavailable", ", ".join(unavailable)) if unavailable else ("not_found", "")
 
 
 def verify_entry(net: Net, entry: Entry) -> CheckResult:
@@ -337,19 +355,28 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
 
     arxiv_rec = records.get("arXiv")
     publication = None
+    publication_url = None
     if arxiv_id:
-        publication = ("unavailable", "")
-        if arxiv_rec is not None and (
-            not bib_title or title_ratio(bib_title, arxiv_rec.title) >= 0.88
-        ):
-            publication = _arxiv_publication(arxiv_rec, None)
-            if publication[0] not in ("record", "reference") and arxiv_rec.title:
-                dblp = dblp_search(net, arxiv_rec.title, first_author=next(iter(arxiv_rec.authors), None))
-                evidence.append(dblp)
-                publication = _arxiv_publication(arxiv_rec, dblp)
-                search_errored = search_errored or dblp.error
+        publication = ("unavailable", "arXiv")
+        if arxiv_rec is not None:
+            indexes = [record for name, record in records.items() if name != "arXiv"]
+            publication = _arxiv_publication(arxiv_rec, *indexes)
+            if arxiv_rec.title and arxiv_rec.authors and publication[0] not in ("record", "accepted", "reference"):
+                for search in (openreview_publication, crossref_publication, dblp_publication):
+                    indexed = search(net, arxiv_rec)
+                    indexes.append(indexed)
+                    evidence.append(indexed)
+                    publication = _arxiv_publication(arxiv_rec, *indexes)
+                    if publication[0] in ("record", "accepted"):
+                        break
+            indexed = _indexed_publication(arxiv_rec, indexes)
+            if indexed:
+                publication_url = indexed.url
+            elif publication[0] in ("reference", "comment"):
+                publication_url = arxiv_rec.url
             sources = {
-                "record": "Publication indexed by DBLP",
+                "record": "Matching publication record",
+                "accepted": "Public acceptance record",
                 "reference": "arXiv publication reference",
                 "comment": "Author comment suggests acceptance or publication",
                 "not_found": "No acceptance or publication evidence found",
@@ -455,6 +482,7 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
         author_diff=author_diff,
         any_error=any_error,
         publication=publication,
+        publication_url=publication_url,
     )
 
 
@@ -463,7 +491,7 @@ def verify_entry(net: Net, entry: Entry) -> CheckResult:
 # ---------------------------------------------------------------------------
 def prefetch_arxiv(net: Net, entries: List[Entry]) -> None:
     ids = sorted({i for i in (extract_arxiv_id(e) for e in entries) if i})
-    if not ids:
+    if len(ids) < 2:
         return
     net.arxiv_prefetch = {
         aid: rec for aid, rec in arxiv_batch(net, ids).items()

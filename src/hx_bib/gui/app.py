@@ -43,6 +43,7 @@ from itertools import zip_longest
 from pathlib import Path
 from threading import Lock
 from typing import Callable, List, Optional
+from urllib.parse import urlsplit
 
 from nicegui import events, ui
 
@@ -688,11 +689,20 @@ def _arxiv_publication_item(result, lang: str) -> str:
     if not result.arxiv_id:
         return ""
     status, evidence = result.publication or ("unavailable", "")
+    link = ""
+    if result.publication_url:
+        try:
+            target = urlsplit(result.publication_url)
+        except ValueError:
+            target = None
+        if target and target.scheme in {"http", "https"} and target.hostname:
+            link = (f'<a class="hx-publication-link" href="{_esc(result.publication_url)}" '
+                    f'target="_blank" rel="noopener noreferrer">{_esc(t(lang, "arxiv_source_link"))}</a>')
     return (
         '<div class="hx-publication-item">'
         f'<code>{_esc(result.entry.key)}</code> · arXiv:{_esc(result.arxiv_id)}'
         f'<div><strong>{_esc(t(lang, "arxiv_status_" + status))}</strong>'
-        f'{(" · " + _esc(evidence)) if evidence else ""}</div></div>'
+        f'{(" · " + _esc(evidence)) if evidence else ""}{link}</div></div>'
     )
 
 

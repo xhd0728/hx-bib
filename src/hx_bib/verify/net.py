@@ -33,6 +33,8 @@ HOST_MIN_INTERVAL = {
     "api2.openreview.net": 0.5,
 }
 
+_CACHE_TTL = {200: 86_400, 404: 3_600, 410: 3_600}
+
 
 def default_cache_path() -> str:
     if os.name == "nt":
@@ -122,11 +124,13 @@ class Net:
         accept: Optional[str] = None,
         retries: int = 3,
         ua: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Tuple[Optional[int], str]:
         cache_key = (accept or "") + "|" + url
-        if self.use_cache and cache_key in self.cache:
-            entry = self.cache[cache_key]
-            return entry["status"], entry["body"]
+        if self.use_cache and (entry := self.cache.get(cache_key)):
+            status, fetched_at = entry.get("status"), entry.get("fetched_at", 0)
+            if status in _CACHE_TTL and 0 <= time.time() - fetched_at < _CACHE_TTL[status]:
+                return status, entry["body"]
 
         try:
             host = urllib.parse.urlparse(url).hostname or ""
@@ -141,7 +145,7 @@ class Net:
             self._throttle(host)
             try:
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(req, timeout=self.timeout if timeout is None else timeout) as resp:
                     result = (resp.getcode(), resp.read().decode("utf-8", "replace"))
                 break
             except urllib.error.HTTPError as exc:
@@ -168,6 +172,6 @@ class Net:
 
         if self.verbose:
             sys.stderr.write(f"    GET {result[0]} {url}\n")
-        if self.use_cache and result[0] not in (None, 429, 500, 502, 503, 504):
-            self.cache[cache_key] = {"status": result[0], "body": result[1]}
+        if self.use_cache and result[0] in _CACHE_TTL:
+            self.cache[cache_key] = {"status": result[0], "body": result[1], "fetched_at": time.time()}
         return result

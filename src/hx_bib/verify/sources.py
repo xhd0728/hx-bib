@@ -23,7 +23,7 @@ from typing import Dict, List, Optional
 from ..core.identifiers import extract_arxiv_id
 from ..core.model import Entry
 from .net import BROWSER_UA, Net
-from .textutil import asciifold, norm_title, surname_of_full, title_ratio
+from .textutil import asciifold, namekey, norm_title, surname_of_full, title_ratio
 
 
 @dataclass
@@ -59,13 +59,23 @@ class SourceRecord:
             "note": self.note,
             "queried": self.queried,
             "match_ratio": self.match_ratio,
+            "publication_type": self.publication_type,
         }
 
 
 # ---------------------------------------------------------------------------
 # arXiv
 # ---------------------------------------------------------------------------
-_ARXIV_NS = {"a": "http://www.w3.org/2005/Atom"}
+_ARXIV_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+_CROSSREF_PUBLICATION_TYPES = {"journal-article", "proceedings-article"}
+
+
+def publication_matches(reference: SourceRecord, candidate: SourceRecord) -> bool:
+    """Require a close title and a shared author before linking two records."""
+    generic = {"team", "group", "anonymous", "collaboration"}
+    reference_authors = {namekey(author) for author in reference.authors} - generic - {""}
+    candidate_authors = {namekey(author) for author in candidate.authors} - generic - {""}
+    return bool(reference_authors & candidate_authors) and title_ratio(reference.title, candidate.title) >= 0.95
 
 
 def _norm_arxiv_id(arxiv_id: str) -> str:
@@ -87,8 +97,8 @@ def _arxiv_entry_to_record(elem: ET.Element) -> Optional[SourceRecord]:
     id_url = (elem.findtext("a:id", "", ns) or "").strip()
     # journal_ref / comment tell us whether the preprint was accepted (or
     # even published) at a venue — used by the "accepted?" check.
-    journal_ref = re.sub(r"\s+", " ", elem.findtext("a:journal_ref", "", ns) or "").strip()
-    comment = re.sub(r"\s+", " ", elem.findtext("a:comment", "", ns) or "").strip()
+    journal_ref = re.sub(r"\s+", " ", elem.findtext("arxiv:journal_ref", "", ns) or "").strip()
+    comment = re.sub(r"\s+", " ", elem.findtext("arxiv:comment", "", ns) or "").strip()
     notes = []
     if journal_ref:
         notes.append("journal_ref: " + journal_ref)
@@ -108,11 +118,12 @@ def arxiv_batch(net: Net, ids: List[str]) -> Dict[str, Optional[SourceRecord]]:
     ids = [_norm_arxiv_id(i) for i in ids]
     for i in range(0, len(ids), 40):
         chunk = ids[i : i + 40]
+        out.update(dict.fromkeys(chunk))
         url = (
             "https://export.arxiv.org/api/query?max_results=100&id_list="
             + ",".join(urllib.parse.quote(c) for c in chunk)
         )
-        status, body = net.get(url, retries=2)
+        status, body = net.get(url, retries=1, timeout=7)
         if status != 200 or not body:
             continue
         try:
@@ -122,9 +133,9 @@ def arxiv_batch(net: Net, ids: List[str]) -> Dict[str, Optional[SourceRecord]]:
         by_id: Dict[str, Optional[SourceRecord]] = {}
         for elem in root.findall("a:entry", _ARXIV_NS):
             idu = elem.findtext("a:id", "", _ARXIV_NS) or ""
-            m = re.search(r"abs/(\d{4}\.\d{4,5})", idu)
+            m = re.search(r"/abs/([^?#]+)", idu)
             if m:
-                by_id[m.group(1)] = _arxiv_entry_to_record(elem)
+                by_id[_norm_arxiv_id(m.group(1))] = _arxiv_entry_to_record(elem)
         for c in chunk:
             out[c] = by_id.get(c)
     return out
@@ -143,7 +154,7 @@ def _parse_meta_tags(body: str) -> Dict[str, List[str]]:
 def arxiv_abs_lookup(net: Net, arxiv_id: str) -> SourceRecord:
     """Fallback via https://arxiv.org/abs/<id> (different infrastructure)."""
     url = "https://arxiv.org/abs/" + urllib.parse.quote(arxiv_id)
-    status, body = net.get(url, ua=BROWSER_UA, retries=4)
+    status, body = net.get(url, ua=BROWSER_UA, retries=2, timeout=8)
     if status in (404, 410):
         return SourceRecord(source="arXiv", found=False, note="abs page 404")
     if status != 200 or not body:
@@ -156,7 +167,7 @@ def arxiv_abs_lookup(net: Net, arxiv_id: str) -> SourceRecord:
     journal_ref = ""
     m = re.search(r'class="[^"]*\bjref\b[^"]*"[^>]*>(.*?)</td>', body, re.I | re.S)
     if m:
-        journal_ref = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", m.group(1))).strip()
+        journal_ref = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))).strip()
         journal_ref = re.sub(r"^Journal\s+ref(?:erence)?\s*:\s*", "", journal_ref, flags=re.I)
     comment = ""
     m = re.search(r'class="[^"]*\bcomments\b[^"]*"[^>]*>(.*?)</td>', body, re.I | re.S)
@@ -200,23 +211,17 @@ def arxiv_lookup(net: Net, arxiv_id: str) -> SourceRecord:
         rec = prefetch[arxiv_id]
         if rec is not None:
             return rec
-        abs_rec = arxiv_abs_lookup(net, arxiv_id)
-        if abs_rec.found or not abs_rec.error:
-            return abs_rec
-        return SourceRecord(source="arXiv", found=False, note="id not found")
+        return arxiv_abs_lookup(net, arxiv_id)
 
     url = "https://export.arxiv.org/api/query?id_list=" + urllib.parse.quote(arxiv_id)
-    status, body = net.get(url, retries=4)
+    status, body = net.get(url, retries=1, timeout=7)
     if status == 200 and body:
         try:
             entries = ET.fromstring(body).findall("a:entry", _ARXIV_NS)
             rec = _arxiv_entry_to_record(entries[0]) if entries else None
             if rec is not None:
                 return rec
-            abs_rec = arxiv_abs_lookup(net, arxiv_id)
-            if abs_rec.found or not abs_rec.error:
-                return abs_rec
-            return SourceRecord(source="arXiv", found=False, note="id not found")
+            return arxiv_abs_lookup(net, arxiv_id)
         except ET.ParseError:
             pass
     return arxiv_abs_lookup(net, arxiv_id)
@@ -244,7 +249,7 @@ def _crossref_item_to_record(msg: dict) -> SourceRecord:
     return SourceRecord(
         source="Crossref", found=True, title=title, authors=authors,
         raw_authors=raw, year=year, venue=venue,
-        doi=msg.get("DOI"), url=msg.get("URL"),
+        doi=msg.get("DOI"), url=msg.get("URL"), publication_type=msg.get("type") or "",
     )
 
 
@@ -294,6 +299,38 @@ def crossref_search(net: Net, title: str, first_author: Optional[str] = None) ->
     return rec
 
 
+def _publication_queries(title: str) -> List[str]:
+    full = norm_title(title)
+    prefix, separator, _ = title.partition(":")
+    short = norm_title(prefix) if separator else ""
+    if len(short.replace(" ", "")) >= 5 and short != full:
+        return [short, full]
+    return [full] if full else []
+
+
+def crossref_publication(net: Net, reference: SourceRecord) -> SourceRecord:
+    for query in _publication_queries(reference.title):
+        params = urllib.parse.urlencode({
+            "rows": 5,
+            "query.bibliographic": query,
+        })
+        status, body = net.get(
+            "https://api.crossref.org/works?" + params, accept="application/json", retries=1, timeout=8,
+        )
+        if status != 200:
+            return SourceRecord("Crossref", False, error=True, note=f"HTTP {status}")
+        try:
+            items = json.loads(body)["message"]["items"]
+        except (ValueError, KeyError, TypeError):
+            return SourceRecord("Crossref", False, error=True, note="parse error")
+        for item in items:
+            if item.get("type") in _CROSSREF_PUBLICATION_TYPES:
+                record = _crossref_item_to_record(item)
+                if record.venue and record.doi and publication_matches(reference, record):
+                    return record
+    return SourceRecord("Crossref", False, note="no matching journal or proceedings article")
+
+
 def doi_resolves(net: Net, doi: str) -> Optional[bool]:
     """True (resolves), False (404), None (inconclusive)."""
     url = "https://doi.org/" + urllib.parse.quote(doi)
@@ -314,14 +351,15 @@ def _as_list(x) -> list:
     return x if isinstance(x, list) else [x]
 
 
-def dblp_search(net: Net, title: str, first_author: Optional[str] = None) -> SourceRecord:
-    q = norm_title(title)
+def dblp_search(net: Net, title: str, first_author: Optional[str] = None,
+                *, query: Optional[str] = None, retries: int = 3, timeout: Optional[float] = None) -> SourceRecord:
+    q = query or norm_title(title)
     if not q:
         return SourceRecord(source="DBLP", found=False, note="empty title")
     if first_author:
         q = q + " " + first_author
     url = "https://dblp.org/search/publ/api?format=json&h=30&q=" + urllib.parse.quote(q)
-    status, body = net.get(url, accept="application/json")
+    status, body = net.get(url, accept="application/json", retries=retries, timeout=timeout)
     if status != 200 or not body:
         return SourceRecord(source="DBLP", found=False, error=True, note=f"HTTP {status}")
     try:
@@ -359,62 +397,103 @@ def dblp_search(net: Net, title: str, first_author: Optional[str] = None) -> Sou
     )
 
 
+def dblp_publication(net: Net, reference: SourceRecord) -> SourceRecord:
+    for query in _publication_queries(reference.title):
+        record = dblp_search(net, reference.title, query=query, retries=1, timeout=8)
+        if record.error or (record.found and publication_matches(reference, record)):
+            return record
+    return SourceRecord("DBLP", False, note="no matching publication record")
+
+
 # ---------------------------------------------------------------------------
 # OpenReview
 # ---------------------------------------------------------------------------
+_OPENREVIEW_NOTES = "https://api2.openreview.net/notes"
+
+
+def _openreview_record(note: dict) -> Optional[SourceRecord]:
+    content = note.get("content", {})
+
+    def value_of(key: str):
+        value = content.get(key)
+        return value.get("value") if isinstance(value, dict) else value
+
+    title = (value_of("title") or "").strip()
+    forum = note.get("forum") or note.get("id")
+    if not title or not forum:
+        return None
+    raw_authors = value_of("authors") or []
+    if isinstance(raw_authors, str):
+        raw_authors = [raw_authors]
+    raw_authors = [author for author in raw_authors if author and author.lower() != "anonymous"]
+    venue_id = value_of("venueid") or ""
+    venue = (value_of("venue") or venue_id).strip()
+    year_match = re.search(r"(19|20)\d\d", venue)
+    year = year_match.group(0) if year_match else None
+    if year is None:
+        for key in ("pdate", "odate", "cdate"):
+            milliseconds = note.get(key)
+            if isinstance(milliseconds, (int, float)) and milliseconds > 0:
+                year = time.strftime("%Y", time.gmtime(milliseconds / 1000))
+                break
+
+    publication_date = note.get("pdate")
+    accepted = (
+        note.get("id") == forum and venue_id and venue_id == note.get("domain")
+        and isinstance(publication_date, (int, float)) and publication_date > 0
+        and not note.get("ddate")
+        and not re.search(r"/(?:submission|withdrawn|rejected|desk_rejected)(?:/|$)", venue_id, re.I)
+    )
+    authors = [surname_of_full(author) for author in raw_authors]
+    return SourceRecord(
+        source="OpenReview", found=True, title=title,
+        authors=[author for author in authors if author], raw_authors=raw_authors,
+        year=year, venue=venue, url="https://openreview.net/forum?" + urllib.parse.urlencode({"id": forum}),
+        publication_type="accepted" if accepted else "",
+    )
+
+
 def openreview_lookup(net: Net, oid: str) -> SourceRecord:
-    base = "https://api2.openreview.net/notes?"
     errored = False
-    for query in ("id=" + urllib.parse.quote(oid), "forum=" + urllib.parse.quote(oid)):
-        status, body = net.get(base + query, accept="application/json")
-        if status != 200 or not body:
-            errored = errored or (status != 200)
+    for parameter in ("id", "forum"):
+        url = _OPENREVIEW_NOTES + "?" + urllib.parse.urlencode({parameter: oid})
+        status, body = net.get(url, accept="application/json")
+        if status != 200:
+            errored = True
             continue
         try:
             notes = json.loads(body).get("notes", [])
-        except ValueError:
+        except (ValueError, AttributeError):
+            errored = True
             continue
-        note = None
-        for candidate in notes:
-            if candidate.get("id") == oid:
-                note = candidate
-                break
-        note = note or (notes[0] if notes else None)
-        if not note:
-            continue
-        content = note.get("content", {})
-
-        def value_of(key: str):
-            v = content.get(key)
-            return v.get("value") if isinstance(v, dict) else v
-
-        title = (value_of("title") or "").strip()
-        if not title:
-            continue
-        raw_authors = value_of("authors") or []
-        if isinstance(raw_authors, str):
-            raw_authors = [raw_authors]
-        raw_authors = [a for a in raw_authors if a and a.lower() != "anonymous"]
-        venue = (value_of("venue") or value_of("venueid") or "").strip()
-        m = re.search(r"(19|20)\d\d", venue)
-        year = m.group(0) if m else None
-        if not year:
-            for key in ("pdate", "odate", "cdate"):
-                ms = note.get(key)
-                if isinstance(ms, (int, float)):
-                    year = time.strftime("%Y", time.gmtime(ms / 1000))
-                    break
-        authors = [surname_of_full(a) for a in raw_authors]
-        return SourceRecord(
-            source="OpenReview", found=True, title=title,
-            authors=[a for a in authors if a], raw_authors=raw_authors,
-            year=year, venue=venue,
-            url="https://openreview.net/forum?id=" + oid,
-        )
+        for note in notes:
+            if note.get("id") == oid:
+                record = _openreview_record(note)
+                if record is not None:
+                    return record
     return SourceRecord(
         source="OpenReview", found=False, error=errored,
         note="could not reach OpenReview" if errored else "forum id not found",
     )
+
+
+def openreview_publication(net: Net, reference: SourceRecord) -> SourceRecord:
+    for query in _publication_queries(reference.title):
+        params = urllib.parse.urlencode({"term": query, "content": "title", "source": "forum", "limit": 10})
+        status, body = net.get(
+            f"{_OPENREVIEW_NOTES}/search?{params}", accept="application/json", retries=1, timeout=8,
+        )
+        if status != 200:
+            return SourceRecord("OpenReview", False, error=True, note=f"HTTP {status}")
+        try:
+            notes = json.loads(body)["notes"]
+        except (KeyError, TypeError, ValueError):
+            return SourceRecord("OpenReview", False, error=True, note="parse error")
+        for note in notes:
+            record = _openreview_record(note)
+            if record and record.publication_type == "accepted" and publication_matches(reference, record):
+                return record
+    return SourceRecord("OpenReview", False, note="no matching public acceptance record")
 
 
 # ---------------------------------------------------------------------------

@@ -309,7 +309,8 @@ def build_json(results: List[CheckResult], bibfile: str) -> str:
             "title": delatex(entry.get("title") or ""),
             "arxiv_id": r.arxiv_id,
             "arxiv_publication": (
-                {"status": r.publication[0], "evidence": r.publication[1]} if r.publication else None
+                {"status": r.publication[0], "evidence": r.publication[1], "url": r.publication_url}
+                if r.publication else None
             ),
             "doi": r.doi,
             "openreview_id": r.openreview_id,
