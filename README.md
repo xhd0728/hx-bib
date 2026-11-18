@@ -2,6 +2,8 @@
 
 [中文使用说明](docs/README.zh.md)
 
+The Python version is installed as below. For the native Rust CLI and Tauri desktop client, see [Rust usage](rust/README.md).
+
 ## Install
 
 Requires Python 3.11+. Run from the project directory:

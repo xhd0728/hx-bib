@@ -2,6 +2,8 @@
 
 [English](../README.md)
 
+Python 版按下方步骤安装。Rust 原生命令行和 Tauri 客户端可查看 [Rust 使用方法](../rust/README.md)。
+
 ## 安装
 
 需要 Python 3.11+。在项目目录执行：
