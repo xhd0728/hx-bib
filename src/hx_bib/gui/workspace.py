@@ -7,6 +7,7 @@ from copy import deepcopy
 
 DEFAULT_SETTINGS = {
     "lang": "zh",
+    "enabled": {"clean": False, "format": True, "normalize": False, "check": False, "venues": False},
     "format": {
         "indent": "4", "field_order": "standard", "sort": "none",
         "align_equals": False, "trailing_comma": False, "drop_comments": False,
@@ -70,11 +71,11 @@ def new_state() -> dict:
     return {
         "lang": "zh", "mode": "tools", "text": "", "baseline": "",
         "name": "", "path": "", "history": [], "pointer": 0,
-        "revision": 0, "previews": {}, "preview_jobs": {}, "drafts": {},
-        "verify_results": None, "verify_filter": "ALL",
-        "check_report": None, "check_filter": "ALL", "check_config": None, "check_job": None,
+        "revision": 0, "drafts": {}, "apply_job": None, "diff_before": None, "diff_view": "changed",
+        "verify_results": None, "arxiv_results": None,
+        "check_report": None, "check_config": None,
         "progress": idle_progress(), "run_control": None,
-        "tab": "format", "venues_only": False,
+        "venues_only": False,
         "source_text": "", "table_source_name": "", "amp": "space", "blank_lines": True,
         "row_indent": 0, "result": None, "result_options": None, "table_view": "code",
         "settings": merge_settings(DEFAULT_SETTINGS, {}), "settings_dirty": False,
@@ -85,14 +86,17 @@ def idle_progress() -> dict:
     return {"done": 0, "total": 0, "key": "", "running": False, "paused": False}
 
 
-def invalidate_results(state: dict) -> None:
+def invalidate_results(state: dict, *, same_file: bool = False) -> None:
     """Detach outstanding jobs before a document/history change."""
-    if state["run_control"] is not None:
-        state["run_control"].cancel()
+    if not (same_file and state["progress"].get("scope") == "arxiv"):
+        if state["run_control"] is not None:
+            state["run_control"].cancel()
+        state.update(run_control=None, progress=idle_progress())
+    if not same_file:
+        state.update(arxiv_results=None, diff_view="changed")
     state.update(
-        revision=state["revision"] + 1, previews={}, preview_jobs={}, preview_controls={}, schedule_preview=None,
-        check_report=None, check_config=None, check_job=None, verify_results=None, check_filter="ALL",
-        verify_filter="ALL", run_control=None, progress=idle_progress(),
+        revision=state["revision"] + 1, apply_job=None, diff_before=None,
+        check_report=None, check_config=None, verify_results=None,
     )
 
 
@@ -101,8 +105,9 @@ def push_stage(state: dict, label: str, text: str) -> bool:
         return False
     history = state["history"][:state["pointer"]]
     history.append({"label": label, "text": text})
-    invalidate_results(state)
-    state.update(history=history, pointer=len(history), text=text)
+    before = state["text"]
+    invalidate_results(state, same_file=True)
+    state.update(history=history, pointer=len(history), text=text, diff_before=before)
     return True
 
 
@@ -110,9 +115,11 @@ def jump_stage(state: dict, pointer: int) -> None:
     pointer = max(0, min(pointer, len(state["history"])))
     if pointer == state["pointer"]:
         return
-    invalidate_results(state)
+    invalidate_results(state, same_file=True)
     state["pointer"] = pointer
     state["text"] = state["history"][pointer - 1]["text"] if pointer else state["baseline"]
+    if pointer:
+        state["diff_before"] = state["history"][pointer - 2]["text"] if pointer > 1 else state["baseline"]
 
 
 def preview_is_current(state: dict, revision: int, before: str) -> bool:

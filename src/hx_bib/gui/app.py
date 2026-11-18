@@ -1,31 +1,4 @@
-"""NiceGUI front-end for hx-bib.
-
-One page, one job per tab:
-
-   上传  →  load a .bib file (drag & drop or local path)
-   格式化 / Format       indentation, equals alignment, field order, sorting
-   清理 / Clean          remove/add fields, months, "others", dedupe, advanced fixes
-   归一化 / Normalize    venue style (abbr/full/family) and arXiv preset
-   校验 / Check          offline structural validation
-   校验引用 / Verify     multi-source hallucination verification
-   预设 / Venues         browse venue presets (each rendering copyable)
-
-A second page, ``/table``, formats LaTeX tabular environments (one row per
-line, tidy ``&``/rules, column alignment) with a per-table diff preview.
-
-Design notes
-------------
-* **Shared working copy.** Every applied change lands in one working copy that
-  all tabs see. Each apply pushes a *stage* onto a history stack, so the user
-  can undo / redo / reset to the original at any point.
-* **Preview first.** Transforms never touch the working copy until the user
-  clicks “Apply”; previews can be inspected three ways — itemized list,
-  GitHub-style side-by-side diff, or per-entry cards with copy buttons.
-* **Per-session isolation.** All state lives in a page-scoped dict, so
-  concurrent sessions (and future server deployments) never share data.
-  Heavy work runs in worker threads; ``Net`` is lock-guarded for concurrent
-  verification.
-"""
+"""NiceGUI workspaces for BibTeX and LaTeX tables."""
 
 from __future__ import annotations
 
@@ -48,13 +21,7 @@ from urllib.parse import urlsplit
 from nicegui import events, ui
 
 from ..core import cleaner
-from ..core.diff import (
-    diff_documents,
-    diff_lines,
-    entry_identity,
-    match_by_key,
-    split_entries,
-)
+from ..core.diff import diff_documents
 from ..core.identifiers import extract_arxiv_id
 from ..core.latex_table import (
     CommentLine,
@@ -65,27 +32,25 @@ from ..core.latex_table import (
     format_tables,
     parse_table_body,
 )
-from ..core.model import Entry
-from ..core.normalize import (
-    NormalizeOptions,
-    entry_venue_presets,
-    normalize_document,
-    normalize_entry,
-)
+from ..core.normalize import entry_venue_presets
 from ..core.parser import parse_bibtex
-from ..core.validator import ValidateOptions, validate_document
+from ..core.validator import ValidationReport
 from ..core.venues import (
     CONFERENCE,
     JOURNAL,
     VENUES,
     families,
-    get_venue,
     render_venue,
     search_venues,
 )
-from ..core.writer import FormatOptions, render_document
 from ..verify import Net, RunControl, prefetch_arxiv, retry_failed, verify_entries
 from ..verify.report import build_html as build_verify_html
+from .bib_workbench import (
+    BibComparison,
+    apply_options,
+    compare_entries,
+    comparison_rows,
+)
 from .diagnostics import issue_text
 from .i18n import t
 from .styles import CSS
@@ -116,8 +81,6 @@ VERDICT_COLOR = {
 _IN_SIM = bool(os.environ.get("NICEGUI_USER_SIMULATION"))
 _SETTINGS_KEY = "hx-bib-settings"
 _TABLE_UPLOAD_LIMIT = 2_000_000
-_LIVE_BIB_TOOLS = {"format", "clean", "normalize", "check", "venues"}
-_LIVE_PREVIEW_DELAY = 0.18
 _CODE_PREVIEW_LINES = 500
 
 # Lighthouse flags Quasar's generated markup: the uploader's icon-only "add file"
@@ -223,13 +186,6 @@ def _set_setting(state: dict, path: str, key: str, value) -> None:
         return
     node[key] = value
     state["settings_dirty"] = True
-    _preview_settings_changed(state, path)
-
-
-def _preview_settings_changed(state: dict, path: str) -> None:
-    _update_preview_controls(state)
-    if refresh := state.get("schedule_preview"):
-        refresh(path)
 
 
 def _bind(widget, state: dict, path: str, key: str, after=None):
@@ -246,18 +202,6 @@ def _bind(widget, state: dict, path: str, key: str, after=None):
 
 def _opt(state: dict, path: str, key: str):
     return _merge_settings(DEFAULT_SETTINGS, state["settings"]).get(path, {}).get(key)
-
-
-def _preview_config(state: dict, key: str) -> dict:
-    config = deepcopy(state["settings"].get(key, {}))
-    if key == "clean":
-        config["drafts"] = {k: v for k, v in state["drafts"].items() if k.startswith("clean_")}
-    return config
-
-
-def _update_preview_controls(state: dict) -> None:
-    for update in state.get("preview_controls", {}).values():
-        update()
 
 
 # ---------------------------------------------------------------------------
@@ -277,46 +221,6 @@ def _esc(text: str) -> str:
     return html.escape(text, quote=True)
 
 
-def _entry_title(entry: Optional[Entry]) -> str:
-    return _esc((entry.get("title") if entry else "") or "")[:120]
-
-
-def changes_html(before: str, after: str, mode: str, lang: str) -> str:
-    changes = diff_documents(parse_bibtex(before), parse_bibtex(after))
-    diffs = changes.changed if mode == "changed" else changes.entries
-    if not diffs:
-        message = "no_field_changes" if before != after else "no_changes"
-        return f'<div class="hx-tab-note" style="padding:12px 0">{_esc(t(lang, message))}</div>'
-    rows = []
-    for d in diffs:
-        badges = []
-        if d.type_changed and d.before and d.after:
-            badges.append(
-                f'<span class="hx-field-mod">@type {_esc(d.before.type)} → {_esc(d.after.type)}</span>'
-            )
-        for fc in d.field_changes:
-            cls = {"added": "hx-field-add", "removed": "hx-field-del",
-                   "modified": "hx-field-mod"}[fc.kind]
-            sign = {"added": "+", "removed": "−", "modified": "~"}[fc.kind]
-            badges.append(f'<span class="{cls}">{sign}{_esc(fc.field_name)}</span>')
-        status = {
-            "added": "#16a34a", "removed": "#dc2626",
-            "modified": "#d97706", "unchanged": "#6b7280",
-        }[d.kind]
-        rows.append(
-            f"<tr><td style='font-family:ui-monospace,monospace;font-weight:600'>{_esc(d.key)}</td>"
-            f"<td><span class='hx-chip' style='color:{status};background:{status}18'>"
-            f"{_esc(t(lang, 'kind_' + d.kind))}</span></td>"
-            f"<td>{' '.join(badges) or '—'}</td></tr>"
-        )
-    return (
-        '<table class="hx-changes"><thead><tr>'
-        f"<th>{_esc(t(lang, 'col_entry'))}</th><th>{_esc(t(lang, 'col_change'))}</th>"
-        f"<th>{_esc(t(lang, 'col_fields'))}</th></tr></thead><tbody>"
-        + "".join(rows) + "</tbody></table>"
-    )
-
-
 def _diff_rows_html(rows) -> str:
     body = []
     for r in rows:
@@ -331,98 +235,6 @@ def _diff_rows_html(rows) -> str:
             f'{_esc(r.right) if has_r else ""}</td></tr>'
         )
     return "".join(body)
-
-
-def _entry_badges(before_slice: str, after_slice: str) -> str:
-    """Field-level badges for a modified entry (reuses the itemized diff)."""
-    try:
-        changes = diff_documents(parse_bibtex(before_slice), parse_bibtex(after_slice))
-    except Exception:  # noqa: BLE001 - slice may not parse standalone
-        return ""
-    changed = [d for d in changes.entries if d.kind != "unchanged"]
-    if not changed:
-        return ""
-    d = changed[0]
-    badges = []
-    if d.type_changed and d.before and d.after:
-        badges.append(
-            f'<span class="hx-field-mod">@type {_esc(d.before.type)} → '
-            f'{_esc(d.after.type)}</span>'
-        )
-    for fc in d.field_changes[:8]:
-        cls = {"added": "hx-field-add", "removed": "hx-field-del",
-               "modified": "hx-field-mod"}[fc.kind]
-        sign = {"added": "+", "removed": "−", "modified": "~"}[fc.kind]
-        badges.append(f'<span class="{cls}">{sign}{_esc(fc.field_name)}</span>')
-    extra = len(d.field_changes) - 8
-    if extra > 0:
-        badges.append(f'<span class="hx-field-mod">+{extra}</span>')
-    return "".join(badges)
-
-
-def entry_diff_html(before: str, after: str, mode: str, lang: str) -> str:
-    """Side-by-side diff grouped per entry — each changed entry gets its own
-    block (header with cite key, change kind and touched fields), so adjacent
-    entries never merge into one undifferentiated wall of rows."""
-    b_spans = split_entries(before)
-    a_spans = split_entries(after)
-    def span_identity(span):
-        text = "\n".join(span.lines)
-        entries = parse_bibtex(text).entries
-        return entry_identity(entries[0]) if entries else text
-
-    def block(key_html: str, kind: str, rows=None, badges: str = "") -> str:
-        head = (
-            f'<div class="hx-ediff-head"><span class="hx-ediff-key">{key_html}</span>'
-            f'<span class="hx-kind hx-kind-{kind}">{_esc(t(lang, "kind_" + kind))}</span>'
-            f'{badges}</div>'
-        )
-        if rows is None:
-            return f'<section class="hx-ediff hx-ediff-{kind}">{head}</section>'
-        return (
-            f'<section class="hx-ediff hx-ediff-{kind}">{head}'
-            f'<div class="hx-ediff-body"><table class="hx-diff"><tbody>'
-            f'{_diff_rows_html(rows)}</tbody></table></div></section>'
-        )
-
-    blocks = []
-
-    # Lines outside any entry (@string, comments, preamble …)
-    b_free = "\n".join(line for sp in b_spans if sp.key is None for line in sp.lines)
-    a_free = "\n".join(line for sp in a_spans if sp.key is None for line in sp.lines)
-    if b_free.strip() or a_free.strip():
-        rows = diff_lines(b_free, a_free)
-        if any(r.kind != "equal" for r in rows):
-            blocks.append(block(_esc(t(lang, "free_block")), "modified", rows))
-
-    pairs = match_by_key(
-        [sp for sp in b_spans if sp.key is not None],
-        [sp for sp in a_spans if sp.key is not None],
-        key=lambda sp: sp.key, identity=span_identity,
-    )
-    for sp, a in pairs:
-        if sp is None:
-            blocks.append(block(_esc(a.key), "added",
-                                diff_lines("", "\n".join(a.lines), 0, a.start)))
-            continue
-        left_text = "\n".join(sp.lines)
-        if a is None:
-            blocks.append(block(_esc(sp.key), "removed",
-                                diff_lines(left_text, "", sp.start, 0)))
-            continue
-        right_text = "\n".join(a.lines)
-        rows = diff_lines(left_text, right_text, sp.start, a.start)
-        if not any(r.kind != "equal" for r in rows):
-            if mode != "changed":
-                blocks.append(block(_esc(sp.key), "unchanged"))
-            continue
-        blocks.append(block(_esc(sp.key), "modified", rows,
-                            _entry_badges(left_text, right_text)))
-
-    if not blocks:
-        return (f'<div class="hx-tab-note" style="padding:12px 0">'
-                f'{_esc(t(lang, "no_changes"))}</div>')
-    return "".join(blocks)
 
 
 BIB_EXAMPLE = """@inproceedings{demo2024,
@@ -558,20 +370,6 @@ def table_compare_html(before: str, after: str, lang: str) -> str:
             f"</div></div></details>"
         )
     return "".join(blocks)
-
-
-def _summary_line(before: str, after: str, lang: str) -> str:
-    changes = diff_documents(parse_bibtex(before), parse_bibtex(after))
-    n_add = changes.count("added")
-    n_del = changes.count("removed")
-    n_mod = changes.count("modified")
-    total = len(changes.entries)
-    return (
-        f"<b>{total}</b> {_esc(t(lang, 'entries'))} · "
-        f"<span style='color:#b45309'>{n_mod} {_esc(t(lang, 'kind_modified'))}</span> · "
-        f"<span style='color:#15803d'>{n_add} {_esc(t(lang, 'kind_added'))}</span> · "
-        f"<span style='color:#b91c1c'>{n_del} {_esc(t(lang, 'kind_removed'))}</span>"
-    )
 
 
 SEVERITY_ICON = {"error": "error", "warning": "warning", "info": "lightbulb"}
@@ -776,48 +574,11 @@ def _busy(button, busy: bool) -> None:
         pass
 
 
-async def _run_preview_job(button, container, state: dict, lang: str,
-                           key: str, compute: Callable, refresh_body,
-                           opts: FormatOptions, label: str) -> None:
-    """Compute from an immutable source; a newer document/job always wins."""
-    before, revision = state["text"], state["revision"]
-    config = _preview_config(state, key)
-    token = object()
-    state["preview_jobs"][key] = token
-    _busy(button, True)
-    try:
-        result = await asyncio.to_thread(compute, before)
-    except Exception as exc:  # surface failures without losing the working copy
-        if preview_is_current(state, revision, before):
-            ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
-        return
-    finally:
-        current_job = state["preview_jobs"].get(key) is token
-        if current_job:
-            state["preview_jobs"].pop(key)
-            _busy(button, False)
-    if (not current_job or not preview_is_current(state, revision, before)
-            or config != _preview_config(state, key)):
-        return
-    state["previews"][key] = {
-        "before": before, "result_text": result, "opts": opts, "label": label,
-        "revision": revision,
-        "key": key, "config": config,
-    }
-    if not container.is_deleted:
-        _render_preview(container, state, lang, before, result, refresh_body,
-                        opts=opts, label=label, revision=revision, key=key, config=config)
-    elif state["mode"] == "tools" and state["tab"] == key:
-        refresh_body.refresh()
-
-
 def _draft(widget, state: dict, key: str, default=""):
     """Keep unfinished input in memory across mode/language/history refreshes."""
     widget.value = state["drafts"].get(key, default)
     def changed(e) -> None:
         state["drafts"][key] = e.value
-        if key.startswith("clean_"):
-            _preview_settings_changed(state, "clean")
 
     widget.on_value_change(changed)
     return widget
@@ -1045,7 +806,7 @@ def _build_page(initial_mode: str) -> None:
                     if state["venues_only"]:
                         _render_venues_only(state, lang, body)
                         return
-                    if not state["text"]:
+                    if not state["name"]:
                         _render_upload(state, lang, body)
                         return
 
@@ -1084,7 +845,7 @@ def _load_text(state: dict, body, lang: str, text: str, name: str, path: str = "
         ui.run_javascript("window.dispatchEvent(new Event('hx-reset-scroll'))")
     state.update(
         text=text, baseline=text, name=name, path=path,
-        history=[], pointer=0, verify_results=None, check_report=None, tab="format",
+        history=[], pointer=0,
         venues_only=False,
     )
     body.refresh()
@@ -1174,7 +935,7 @@ def _render_venues_only(state: dict, lang: str, body) -> None:
         'data-hx-scroll="panel-venues-only"'
     ):
         with ui.card().classes("hx-card w-full p-4 gap-3"):
-            _panel_venues(state, lang, None, body)
+            _panel_venues(state, lang)
 
 
 # ---------------------------------------------------------------------------
@@ -1432,7 +1193,7 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
         def close() -> None:
             invalidate_results(state)
             state.update(text="", baseline="", name="", path="", history=[],
-                         pointer=0, tab="format", venues_only=False)
+                         pointer=0, venues_only=False)
             body.refresh()
 
         _confirm(lang, t(lang, "close_title"), t(lang, "close_body"), close)
@@ -1531,154 +1292,397 @@ def _render_status_bar(state: dict, lang: str, doc, body) -> None:
 # Panels
 # ---------------------------------------------------------------------------
 def _render_bib_workbench(state: dict, lang: str, doc, refresh_body) -> None:
-    builders = {
-        "format": _panel_format,
-        "clean": _panel_clean,
-        "normalize": _panel_normalize,
-        "check": _panel_check,
-        "verify": _panel_verify,
-        "venues": _panel_venues,
-    }
-    actions = {}
-    quick = {}
-    pending = None
-
-    def cancel_pending() -> None:
-        nonlocal pending
-        if pending is not None:
-            pending.cancel()
-            pending = None
-
-    def schedule_preview(key: str) -> None:
-        nonlocal pending
-        if key not in _LIVE_BIB_TOOLS or key != state["tab"] or workbench.is_deleted:
-            return
-        cancel_pending()
-        revision = state["revision"]
-
-        async def refresh() -> None:
-            nonlocal pending
-            pending = None
-            if state["revision"] == revision and actions.get("key") == key:
-                if command := actions.get("run"):
-                    await command()
-
-        with workbench:
-            pending = ui.timer(_LIVE_PREVIEW_DELAY, refresh, once=True)
-
-    def has_result(key: str, scope: str = "all") -> bool:
-        if key == "check":
-            return (
-                state["check_report"] is not None and state["check_config"] == _preview_config(state, key)
-            )
-        if key == "verify":
-            return state["progress"].get("scope") == scope and (
-                state["verify_results"] is not None or state["run_control"] is not None
-            )
-        preview = state["previews"].get(key)
-        return preview is not None and preview["config"] == _preview_config(state, key)
-
-    def update_actions() -> None:
-        viewed = state["tab"]
-        if viewed == "verify" and state["progress"].get("scope") == "arxiv":
-            viewed = "arxiv"
-        for key, button in quick.items():
-            active = viewed == key
-            button.props(add="aria-pressed=true" if active else "aria-pressed=false")
-            button.classes(add="hx-action-active" if active else "",
-                           remove="" if active else "hx-action-active")
-            _busy(button, active and (
-                key in state["preview_jobs"] if key in _LIVE_BIB_TOOLS - {"check"} else
-                state["check_job"] is not None if key == "check" else
-                state["run_control"] is not None
-            ))
-
-    async def select(key: str, configure: bool = False):
-        if key != state["tab"]:
-            cancel_pending()
-            state["tab"] = key
-            await result.refresh()
-            update_actions()
-        if actions.get("key") != key:
-            return None
-        if configure and "options" in actions:
-            actions["options"]()
-        return actions.get("run")
-
-    def run_action(key: str):
-        async def run() -> None:
-            use_cached = key != state["tab"] and has_result(key)
-            command = await select(key, configure=key in {"clean", "normalize"})
-            if key != "venues" and command is not None and not use_cached:
-                cancel_pending()
-                await command()
-
-        return run
-
-    async def run_arxiv() -> None:
-        use_cached = state["tab"] != "verify" and has_result("verify", "arxiv")
-        command = await select("verify")
-        if command is not None and not use_cached:
-            await command(scope="arxiv")
-
-    with ui.card().classes("hx-card hx-workbench hx-bib-workbench w-full") as workbench:
+    with ui.card().classes("hx-card hx-workbench hx-bib-workbench w-full"):
         _render_status_bar(state, lang, doc, refresh_body)
         with ui.element("div").classes("hx-workbench-grid w-full"):
-            with ui.element("aside").classes("hx-workbench-rail hx-bib-rail").props(
-                'data-hx-scroll="bib-actions"'
-            ):
-                with ui.column().classes("hx-bib-tool-list w-full gap-2"):
-                    for heading, items in (
-                        ("workbench_actions", (
-                            ("format", "workbench_organize", "auto_fix_high"),
-                            ("check", "tab_check", "rule"),
-                            ("verify", "workbench_verify", "travel_explore"),
-                        )),
-                        ("workbench_more", (
-                            ("clean", "tab_clean", "cleaning_services"),
-                            ("normalize", "tab_normalize", "tune"),
-                            ("venues", "tab_venues", "stadium"),
-                            ("arxiv", "arxiv_publication_action", "school"),
-                        )),
-                    ):
-                        with ui.column().classes("hx-workbench-nav w-full gap-1"):
-                            ui.label(t(lang, heading)).classes("hx-optlabel")
-                            with ui.column().classes("hx-workbench-actions w-full gap-1"):
-                                for key, label, icon in items:
-                                    handler = run_arxiv if key == "arxiv" else run_action(key)
-                                    quick[key] = ui.button(t(lang, label), icon=icon, on_click=handler).props(
-                                        "flat dense no-caps"
-                                    ).mark(f"action-{key}")
-                with ui.element("div").classes("hx-bib-options-scroll").props('data-hx-scroll="bib-options"'):
-                    settings_host = ui.column().classes("w-full gap-2")
+            with ui.element("aside").classes("hx-workbench-rail hx-bib-rail"):
+                with ui.column().classes("hx-bib-options-scroll w-full gap-2").props('data-hx-scroll="bib-options"'):
+                    _bib_settings(state, lang, doc)
+                    with _bib_section(state, lang, "verify", "workbench_verify", "travel_explore"):
+                        _draft(ui.input(t(lang, "only_keys")).mark("verify-keys"), state, "verify_keys")
+                        _bind(ui.number(t(lang, "delay"), value=_opt(state, "verify", "delay"),
+                                        min=0, step=0.1), state, "verify", "delay")
+                        _bind(ui.number(t(lang, "workers"), value=_opt(state, "verify", "workers"),
+                                        min=1, max=8, step=1), state, "verify", "workers")
+                        _bib_switch(state, lang, "verify", "use_cache", "use_cache")
+                        verify = ui.button(t(lang, "workbench_verify"), icon="travel_explore").props(
+                            "outline no-caps",
+                        ).classes("w-full").mark("action-verify")
+                        download = ui.button(t(lang, "download_report"), icon="download").props(
+                            "flat dense no-caps",
+                        ).mark("verify-download")
+                with ui.column().classes("hx-bib-footer w-full gap-2"):
+                    apply = ui.button(t(lang, "bib_apply"), icon="check").props(
+                        "unelevated no-caps",
+                    ).classes("w-full").mark("apply-btn")
+                    arxiv = ui.button(t(lang, "arxiv_publication_action"), icon="school").props(
+                        "outline no-caps",
+                    ).classes("w-full").mark("action-arxiv")
+                    status = ui.label("").classes("hx-tab-note").props("role=status").mark("verify-status")
+                    with ui.row().classes("w-full gap-1") as run_controls:
+                        pause = ui.button(t(lang, "pause"), icon="pause").props(
+                            "flat dense no-caps",
+                        ).mark("verify-pause")
+                        stop = ui.button(t(lang, "stop"), icon="stop").props(
+                            "flat dense no-caps color=red-7",
+                        ).mark("verify-stop")
+            with ui.element("section").classes("hx-workbench-output hx-bib-results"):
+                render_results = _bib_results(state, lang)
 
-            with ui.element("section").classes("hx-workbench-output w-full").props(
-                'data-hx-scroll="bib-results"'
-            ):
-                @ui.refreshable
-                def result() -> None:
-                    key = state["tab"]
-                    settings_host.clear()
-                    actions.clear()
-                    actions["key"] = key
-                    actions["settings_host"] = settings_host
-                    actions["update_actions"] = update_actions
-                    builders[key](state, lang, doc, refresh_body, quick.get(key), actions, select)
+        async def run_apply() -> None:
+            _busy(apply, True)
+            try:
+                if await _apply_bib_options(state, lang):
+                    refresh_body.refresh()
+            finally:
+                _busy(apply, False)
 
-                result()
-        update_actions()
-        state["schedule_preview"] = schedule_preview
+        apply.on_click(run_apply)
+
+        last = None
+
+        def sync_online() -> None:
+            nonlocal last
+            if status.is_deleted:
+                return
+            progress = state["progress"]
+            control = state["run_control"]
+            scope = progress.get("scope")
+            done, total = progress["done"], progress["total"]
+            paused = progress["paused"]
+            stopping = control is not None and control.cancelled.is_set()
+            outcome = progress.get("outcome")
+            reports = state["verify_results"], state["arxiv_results"]
+            snapshot = (scope, done, total, paused, stopping, outcome, control, *(id(report) for report in reports))
+            if snapshot == last:
+                return
+            if last is not None and snapshot[-2:] != last[-2:]:
+                render_results.refresh()
+            last = snapshot
+            for button, kind in ((verify, "all"), (arxiv, "arxiv")):
+                button.set_enabled(control is None)
+                _busy(button, control is not None and scope == kind)
+            download.set_enabled(any(reports))
+            run_controls.set_visibility(control is not None)
+            pause.set_enabled(not stopping)
+            stop.set_enabled(not stopping)
+            pause.set_text(t(lang, "resume" if paused else "pause"))
+            pause.set_icon("play_arrow" if paused else "pause")
+            status.set_visibility(bool(scope))
+            if control is not None:
+                phase = "verify_stopping" if stopping else "state_paused" if paused else "state_running"
+                status.set_text(f"{done}/{total} · {t(lang, phase)}")
+            elif outcome == "failed":
+                status.set_text(t(lang, "verify_failed"))
+            elif outcome == "stopped":
+                status.set_text(t(lang, "stopped_partial").format(n=done))
+            elif scope:
+                status.set_text(t(lang, "verify_done").format(n=done))
+
+        async def run_online(scope: str) -> None:
+            await _verify_bib(state, lang, scope, sync_online)
+
+        def toggle_pause() -> None:
+            control = state["run_control"]
+            if control is not None and not control.cancelled.is_set():
+                if control.paused.is_set():
+                    control.resume()
+                else:
+                    control.pause()
+                state["progress"]["paused"] = control.paused.is_set()
+                sync_online()
+
+        def stop_run() -> None:
+            if (control := state["run_control"]) is not None:
+                control.cancel()
+                state["progress"]["paused"] = False
+                sync_online()
+
+        def download_report() -> None:
+            results = state["verify_results"] or state["arxiv_results"]
+            if results:
+                ui.download(build_verify_html(results, state["name"]).encode("utf-8"),
+                            f"{Path(state['name']).stem}.report.html")
+
+        verify.on_click(lambda: run_online("all"))
+        arxiv.on_click(lambda: run_online("arxiv"))
+        pause.on_click(toggle_pause)
+        stop.on_click(stop_run)
+        download.on_click(download_report)
+        sync_online()
+        ui.timer(0.25, sync_online)
 
 
 @contextmanager
-def _workbench_settings(actions: dict, lang: str, note: str):
-    with actions["settings_host"], ui.expansion(
-        t(lang, "workbench_advanced"), icon="tune",
-    ).classes("hx-workbench-disclosure w-full").mark("bib-advanced") as expansion:
-        actions["options"] = expansion.open
-        with ui.column().classes("hx-workbench-settings w-full gap-3"):
-            ui.label(note).classes("hx-tab-note")
+def _bib_section(state: dict, lang: str, key: str, title: str, icon: str):
+    draft = f"bib_open_{key}"
+    toggled = key in state["settings"]["enabled"]
+
+    def label() -> str:
+        status = " · " + t(lang, "bib_enabled") if toggled and _opt(state, "enabled", key) else ""
+        return t(lang, title) + status
+
+    with ui.expansion(label(), icon=icon, value=state["drafts"].get(draft, False)).props(
+        "dense",
+    ).classes("hx-bib-section w-full").mark(f"options-{key}") as section:
+        section.on_value_change(lambda e: state["drafts"].update({draft: e.value}))
+        with ui.column().classes("hx-workbench-settings w-full gap-2"):
+            if toggled:
+                _bind(ui.switch(t(lang, "bib_include"), value=_opt(state, "enabled", key)).mark(f"enable-{key}"),
+                      state, "enabled", key, after=lambda _: section.props(f'label="{label()}"'))
             yield
+
+
+def _bib_switch(state: dict, lang: str, section: str, key: str, text: str) -> None:
+    _bind(ui.switch(t(lang, text), value=_opt(state, section, key)).mark(f"{section}-option-{key}"),
+          state, section, key)
+
+
+def _bib_select(state: dict, lang: str, section: str, key: str, label: str, choices: dict) -> None:
+    _bind(ui.select(choices, value=_opt(state, section, key), label=t(lang, label)).mark(f"{section}-{key}"),
+          state, section, key)
+
+
+def _bib_settings(state: dict, lang: str, doc) -> None:
+    with _bib_section(state, lang, "clean", "bib_cleanup", "cleaning_services"):
+        _bind(ui.select(cleaner.COMMON_FIELDS, value=list(_opt(state, "clean", "remove")), multiple=True,
+                        label=t(lang, "remove_fields")).props("use-chips"), state, "clean", "remove")
+        for key in ("custom_remove", "add_key", "add_value"):
+            _draft(ui.input(t(lang, key)).mark(f"clean-{key}"), state, f"clean_{key}")
+        _draft(ui.switch(t(lang, "overwrite")).mark("clean-overwrite"), state, "clean_overwrite", False)
+        for key, label in (
+            ("drop_empty", "drop_empty"), ("drop_others", "drop_others"), ("months", "months"),
+            ("title_period", "title_period"), ("doi", "opt_doi"), ("pages", "opt_pages"),
+            ("clean_urls", "opt_clean_urls"), ("dedupe", "dedupe"), ("dedupe_title", "opt_dedupe_title"),
+            ("keep_last", "keep_last"),
+        ):
+            _bib_switch(state, lang, "clean", key, label)
+
+    with _bib_section(state, lang, "format", "tab_format", "format_align_left"):
+        _bib_select(state, lang, "format", "indent", "opt_indent",
+                    {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "Tab", "align": t(lang, "bib_indent_align")})
+        _bib_select(state, lang, "format", "field_order", "opt_order",
+                    {key: t(lang, label) for key, label in
+                     (("standard", "order_standard"), ("alphabetical", "order_alpha"), ("keep", "order_keep"))})
+        _bib_select(state, lang, "format", "sort", "opt_sort",
+                    {key: t(lang, f"bib_sort_{key}") if key != "none" else t(lang, "sort_none")
+                     for key in ("none", "key", "year", "type", "title")})
+        for key in ("align_equals", "trailing_comma", "drop_comments"):
+            _bib_switch(state, lang, "format", key, "opt_" + key)
+
+    with _bib_section(state, lang, "normalize", "tab_normalize", "tune"):
+        _bib_select(state, lang, "normalize", "venue_style", "venue_style",
+                    {key: t(lang, "style_" + key + "_short") for key in (*_VENUE_STYLES, "keep")})
+        _bib_select(state, lang, "normalize", "arxiv_style", "arxiv_style",
+                    {"journal": t(lang, "arxiv_journal_short"), "misc": t(lang, "arxiv_misc_short"),
+                     "keep": t(lang, "style_keep_short")})
+        for key in ("fix_types", "drop_arxiv_volume", "add_arxiv_url"):
+            _bib_switch(state, lang, "normalize", key, key)
+
+    with _bib_section(state, lang, "check", "tab_check", "rule"):
+        for key in DEFAULT_SETTINGS["check"]:
+            _bib_switch(state, lang, "check", key, "check_opt_" + key)
+        report = state["check_report"]
+        if report is not None:
+            def download_json() -> None:
+                payload = {"tool": "hx-bib", "options": state["check_config"], "issues": [
+                    {"severity": i.severity, "key": i.key, "code": i.code, "field": i.field_name,
+                     "line": i.line, "message": i.message} for i in report.sorted()
+                ]}
+                ui.download(json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"),
+                            f"{Path(state['name']).stem}.check.json")
+
+            ui.button(t(lang, "download_json"), icon="download", on_click=download_json).props(
+                "flat dense no-caps",
+            ).mark("check-download")
+
+    with _bib_section(state, lang, "venues", "tab_venues", "stadium"):
+        _bib_select(state, lang, "venues", "preset_style", "venue_style",
+                    {key: t(lang, "style_" + key + "_short") for key in _VENUE_STYLES})
+        ui.label(t(lang, "bib_venue_precedence")).classes("hx-tab-note")
+        _panel_venues(state, lang, doc, compact=True)
+
+
+async def _apply_bib_options(state: dict, lang: str) -> bool:
+    if state["apply_job"] is not None:
+        return False
+    before, revision = state["text"], state["revision"]
+    settings = deepcopy(state["settings"])
+    drafts = state["drafts"].copy()
+    token = state["apply_job"] = object()
+    try:
+        after, report = await asyncio.to_thread(apply_options, before, settings, drafts)
+    except Exception as exc:
+        if preview_is_current(state, revision, before):
+            message = t(lang, str(exc)) if str(exc) in {
+                "incomplete_field", "bib_invalid_field", "bib_parse_first", "bib_result_invalid",
+            } else t(lang, "operation_failed").format(error=exc)
+            ui.notify(message, type="warning", position="bottom-right")
+        return False
+    finally:
+        if state["apply_job"] is token:
+            state["apply_job"] = None
+    if not preview_is_current(state, revision, before):
+        return False
+    _push_stage(state, t(lang, "bib_apply_stage"), after)
+    state.update(diff_before=before, check_report=report, check_config=settings["check"])
+    return True
+
+
+async def _verify_bib(state: dict, lang: str, scope: str, sync_view) -> None:
+    if state["run_control"] is not None:
+        return
+    before, revision = state["text"], state["revision"]
+    entries = parse_bibtex(before).entries
+    if scope == "arxiv":
+        entries = [entry for entry in entries if extract_arxiv_id(entry)]
+    else:
+        keys = set((state["drafts"].get("verify_keys") or "").replace(",", " ").split())
+        if missing := keys - {entry.key for entry in entries}:
+            ui.notify(t(lang, "unknown_keys").format(keys=", ".join(sorted(missing))), type="warning")
+            return
+        if keys:
+            entries = [entry for entry in entries if entry.key in keys]
+    if not entries:
+        ui.notify(t(lang, "arxiv_no_entries" if scope == "arxiv" else "no_results"), type="warning")
+        return
+
+    settings = _merge_settings(DEFAULT_SETTINGS, state["settings"])["verify"]
+    control = RunControl()
+    progress = dict(done=0, total=len(entries), paused=False, running=True, scope=scope)
+    state.update(run_control=control, progress=progress)
+    sync_view()
+    progress_lock = Lock()
+
+    def update_progress(done: int, total: int, _key: str) -> None:
+        with progress_lock:
+            if done > progress["done"]:
+                progress.update(done=done, total=total)
+
+    def work() -> list:
+        net = Net(delay=settings["delay"], use_cache=settings["use_cache"])
+        if not control.wait_if_paused():
+            return []
+        prefetch_arxiv(net, entries)
+        results = verify_entries(net, entries, progress=update_progress, workers=settings["workers"], control=control)
+        if not control.cancelled.is_set() and any(r.any_error and r.verdict != "OK" for r in results):
+            results = retry_failed(net, results, control=control)
+        return results
+
+    try:
+        results = await asyncio.to_thread(work)
+        outcome = "stopped" if control.cancelled.is_set() else "completed"
+    except Exception as exc:
+        results, outcome = None, "failed"
+        if state["run_control"] is control:
+            ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
+    if state["run_control"] is not control:
+        return
+    state["run_control"] = None
+    progress.update(running=False, paused=False, outcome=outcome, done=len(results or []))
+    if results is not None and (scope == "arxiv" or preview_is_current(state, revision, before)):
+        state["arxiv_results" if scope == "arxiv" else "verify_results"] = results
+    sync_view()
+
+
+def _bib_results(state: dict, lang: str):
+    before = state["diff_before"]
+    after = state["text"]
+    comparisons = compare_entries(after if before is None else before, after)
+    report = state["check_report"]
+
+    with ui.row().classes("hx-bib-result-header w-full items-center justify-between gap-2"):
+        with ui.column().classes("gap-0"):
+            ui.label(t(lang, "bib_diff")).classes("hx-panel-title")
+            counts = Counter(c.kind for c in comparisons if c.before is not None or c.after is not None)
+            ui.label(t(lang, "bib_diff_count").format(
+                modified=counts["modified"], added=counts["added"], removed=counts["removed"],
+            )).classes("hx-tab-note").mark("diff-count")
+        mode = ui.toggle({"changed": t(lang, "bib_diff_only"), "all": t(lang, "bib_diff_all")},
+                         value=state["diff_view"]).props("unelevated no-caps").mark("bib-diff-mode")
+
+    with ui.column().classes("hx-bib-diff-list w-full gap-3").props('data-hx-scroll="bib-results"'):
+        @ui.refreshable
+        def render() -> None:
+            full = state["diff_view"] == "all"
+            issues = {}
+            document_issues = []
+            for issue in report.sorted() if report is not None else ():
+                if issue.code == "parse":
+                    document_issues.append(issue)
+                else:
+                    issues.setdefault((issue.key, issue.line), []).append(issue)
+            if document_issues:
+                ui.html(check_html(ValidationReport(document_issues), lang)).classes("w-full")
+            if report is not None and not report.issues:
+                ui.label(t(lang, "check_clean")).classes("hx-tab-note").mark("check-clean")
+            arxiv = {item.arxiv_id: item for item in state["arxiv_results"] or []}
+            verified = {item.entry.source_span: item for item in state["verify_results"] or []}
+            visible = 0
+            for index, comparison in enumerate(comparisons):
+                entry = comparison.after
+                local = []
+                online = None
+                publication = None
+                if entry is not None:
+                    local = issues.get((entry.key, entry.line), []) + issues.get((entry.key, 0), [])
+                    online = verified.get(entry.source_span)
+                    publication = arxiv.get(extract_arxiv_id(entry)) if arxiv else None
+                needs_attention = online is not None and online.verdict != "OK"
+                if not full and comparison.kind == "unchanged" and not (local or needs_attention or publication):
+                    continue
+                visible += 1
+                _bib_diff_card(lang, comparison, index, full, local, online, publication)
+            if not visible and not (report and report.issues):
+                message = "bib_diff_ready" if before is None else "no_changes"
+                with ui.column().classes("hx-bib-diff-empty w-full items-center gap-2"):
+                    ui.icon("difference", size="26px")
+                    ui.label(t(lang, message)).classes("hx-tab-note").mark("diff-empty")
+
+        render()
+
+    def change(e) -> None:
+        state["diff_view"] = e.value
+        render.refresh()
+
+    mode.on_value_change(change)
+    return render
+
+
+def _bib_diff_card(lang: str, comparison: BibComparison, index: int, full: bool, issues, online, publication) -> None:
+    entry = comparison.after or comparison.before
+    with ui.element("article").classes("hx-bib-diff-card w-full").mark("bib-diff-entry"):
+        with ui.row().classes("hx-bib-diff-heading w-full items-center gap-2"):
+            ui.label(entry.key if entry is not None else t(lang, "free_block")).classes("hx-ediff-key")
+            kind = comparison.kind
+            ui.label(t(lang, "kind_" + kind)).classes(f"hx-kind hx-kind-{kind}")
+            if comparison.moved:
+                ui.label(t(lang, "bib_moved")).classes("hx-kind")
+        with ui.element("div").classes("hx-bib-diff-sides w-full"):
+            for side, value in (("before", comparison.left), ("after", comparison.right)):
+                with ui.row().classes("hx-bib-diff-side items-center gap-2"):
+                    ui.label(t(lang, "code_" + side)).classes("hx-tab-note")
+                    ui.space()
+                    label = t(lang, "copy_" + side)
+                    ui.button(icon="content_copy", on_click=_copy_handler(value or "", lang)).props(
+                        f'flat dense no-caps aria-label="{label}"',
+                    ).tooltip(label).mark(
+                        f"diff-{index}-copy-{side}",
+                    ).set_enabled(value is not None and bool(value))
+        if full or kind != "unchanged":
+            rows = comparison_rows(comparison, full)
+            if rows:
+                ui.html(f'<table class="hx-diff"><tbody>{_diff_rows_html(rows)}</tbody></table>').classes("w-full")
+            else:
+                ui.label(t(lang, "bib_spacing_only")).classes("hx-bib-note hx-tab-note")
+        if issues or online or publication:
+            with ui.column().classes("hx-bib-note w-full gap-1"):
+                if issues:
+                    ui.html(check_html(ValidationReport(issues), lang)).classes("w-full")
+                if publication:
+                    ui.html(_arxiv_publication_item(publication, lang)).classes("w-full").mark("arxiv-result")
+                if online:
+                    ui.html(verify_html([online], "ALL", lang)).classes("w-full")
 
 
 def _comparison_code(before: str, after: Optional[str]) -> tuple[str, str]:
@@ -1735,44 +1739,20 @@ def _code_pair(before: Optional[str], after: Optional[str], lang: str, key: str,
     return after_button
 
 
-def _entry_comparisons(before: str, after: str) -> list:
-    pairs = match_by_key(
-        parse_bibtex(before).entries, parse_bibtex(after).entries,
-        key=lambda entry: entry.key, identity=entry_identity,
-    )
-
-    def excerpt(source: str, entry: Optional[Entry]) -> Optional[str]:
-        if entry is None or entry.source_span is None:
-            return None
-        start, stop = entry.source_span
-        return source[start:stop]
-
-    return [
-        (f"{(old or new).key} · L{(old or new).line}", excerpt(before, old), excerpt(after, new))
-        for old, new in pairs
-    ]
-
-
 def _review_parts(lang: str, key: str, get_parts: Callable,
-                  allow_after: Optional[Callable] = None, *,
-                  preferences: Optional[dict] = None, preference_key: str = "") -> Callable:
+                  allow_after: Optional[Callable] = None) -> Callable:
     after_button = None
-    expanded_key = preference_key + ":expanded"
-    item_key = preference_key + ":item"
 
     def update_after() -> None:
         if after_button is not None and not after_button.is_deleted and allow_after is not None:
             after_button.set_enabled(allow_after())
 
-    with ui.expansion(t(lang, "workbench_details"), icon="difference",
-                      value=bool(preferences and preferences.get(expanded_key))).classes(
+    with ui.expansion(t(lang, "workbench_details"), icon="difference").classes(
         "hx-workbench-disclosure w-full"
     ).mark(f"{key}-details") as details:
         slot = ui.column().classes("w-full gap-2")
 
     def load() -> None:
-        if preferences is not None:
-            preferences[expanded_key] = details.value
         if not details.value or slot.default_slot.children:
             return
         entries = get_parts()
@@ -1781,9 +1761,7 @@ def _review_parts(lang: str, key: str, get_parts: Callable,
                 ui.label(t(lang, "no_results")).classes("hx-tab-note")
                 return
             labels = {index: name for index, (name, _, _) in enumerate(entries)}
-            selected = preferences.get(item_key) if preferences is not None else None
-            initial = next((index for index, name in labels.items() if name == selected), 0)
-            picker = ui.select(labels, value=initial, label=t(lang, "workbench_pick_item")).props(
+            picker = ui.select(labels, value=0, label=t(lang, "workbench_pick_item")).props(
                 "use-input hide-selected fill-input"
             ).classes("w-full").mark(f"{key}-pick-item")
             pair_slot = ui.column().classes("w-full gap-2")
@@ -1794,8 +1772,6 @@ def _review_parts(lang: str, key: str, get_parts: Callable,
                 after_button = None
                 if picker.value is None:
                     return
-                if preferences is not None:
-                    preferences[item_key] = labels[picker.value]
                 _, before, after = entries[picker.value]
                 with pair_slot:
                     button = _code_pair(before, after, lang, f"{key}-item", allow_after=allow_after)
@@ -1807,725 +1783,7 @@ def _review_parts(lang: str, key: str, get_parts: Callable,
             display()
 
     details.on_value_change(lambda _: load())
-    load()
     return update_after
-
-
-def _preview_area(lang: str, state: dict, key: str, refresh_body) -> ui.column:
-    col = ui.column().classes("hx-workbench-result w-full gap-3")
-    saved = state["previews"].get(key)
-    if saved and preview_is_current(state, saved["revision"], saved["before"]):
-        _render_preview(col, state, lang, saved["before"], saved["result_text"],
-                        refresh_body, opts=saved["opts"], label=saved["label"],
-                        revision=saved["revision"], key=key, config=saved["config"])
-    else:
-        with col:
-            _panel_head("difference", t(lang, "preview_title"), t(lang, "workbench_bib_ready"))
-            _code_pair(state["text"], None, lang, "bib")
-    return col
-
-
-def _render_preview(container: ui.column, state: dict, lang: str,
-                    before: str, result_text: str, refresh_body=None,
-                    opts: Optional[FormatOptions] = None,
-                    label: str = "", revision: Optional[int] = None,
-                    key: str = "format", config: Optional[dict] = None) -> None:
-    revision = state["revision"] if revision is None else revision
-    config = _preview_config(state, key) if config is None else config
-    container.clear()
-
-    def fresh() -> bool:
-        return preview_is_current(state, revision, before) and config == _preview_config(state, key)
-
-    def apply_result() -> None:
-        if not fresh():
-            ui.notify(t(lang, "preview_options_changed"), type="warning")
-            return
-        if _push_stage(state, label or t(lang, "applied"), result_text):
-            ui.notify(t(lang, "step_applied").format(n=state["pointer"], label=label),
-                      type="positive", position="bottom-right")
-            if refresh_body is not None:
-                refresh_body.refresh()
-
-    with container:
-        changes = _summary_line(before, result_text, lang)
-        with ui.row().classes("w-full items-center gap-2 hx-result-head"):
-            ui.label(f'{label} · {t(lang, "preview_title")}').classes("hx-panel-title").mark("preview-title")
-            ui.html(changes)
-            ui.space()
-            apply_button = ui.button(t(lang, "apply_btn"), icon="check", on_click=apply_result).props(
-                "unelevated color=primary no-caps"
-            ).mark("apply-btn")
-        status = ui.label("").classes("hx-tab-note").props("role=status")
-        after_button = _code_pair(before, result_text, lang, "bib", allow_after=fresh)
-        update_part = _review_parts(
-            lang, "bib", lambda: _entry_comparisons(before, result_text), allow_after=fresh,
-            preferences=state["drafts"], preference_key="preview:" + key,
-        )
-        with ui.expansion(t(lang, "view_list"), icon="list").classes("hx-workbench-disclosure w-full"):
-            ui.html(changes_html(before, result_text, "changed", lang)).classes("w-full")
-
-    def update_status() -> None:
-        if apply_button.is_deleted:
-            return
-        current = preview_is_current(state, revision, before)
-        apply_button.set_enabled(fresh() and result_text != before)
-        after_button.set_enabled(fresh())
-        update_part()
-        message = ("stale_preview" if not current else "preview_options_changed" if not fresh()
-                   else "no_changes" if result_text == before else "preview_current")
-        status.set_text(t(lang, message))
-
-    state.setdefault("preview_controls", {})[key] = update_status
-    update_status()
-
-
-# -- format -----------------------------------------------------------------
-def _panel_format(state: dict, lang: str, _doc, refresh_body, primary, actions, _navigate) -> None:
-    with _workbench_settings(actions, lang, t(lang, "format_note")):
-        with ui.row().classes("gap-4 items-end flex-wrap"):
-            indent = _bind(ui.select(
-                {"4": "4 spaces", "2": "2 spaces", "0": "0", "tab": "tab", "align": "align"},
-                value=_opt(state, "format", "indent") or "4",
-                label=t(lang, "opt_indent"),
-            ).classes("w-36"), state, "format", "indent")
-            field_order = _bind(ui.select(
-                {"standard": t(lang, "order_standard"),
-                 "alphabetical": t(lang, "order_alpha"),
-                 "keep": t(lang, "order_keep")},
-                value=_opt(state, "format", "field_order") or "standard",
-                label=t(lang, "opt_order"),
-            ).classes("w-44"), state, "format", "field_order")
-            sort = _bind(ui.select(
-                {"none": t(lang, "sort_none"), "key": "key", "year": "year",
-                 "type": "type", "title": "title"},
-                value=_opt(state, "format", "sort") or "none",
-                label=t(lang, "opt_sort"),
-            ).classes("w-36"), state, "format", "sort")
-            align_equals = _bind(ui.switch(t(lang, "opt_align_equals"),
-                                           value=bool(_opt(state, "format", "align_equals"))),
-                                 state, "format", "align_equals")
-            trailing = _bind(ui.switch(t(lang, "opt_trailing_comma"),
-                                       value=bool(_opt(state, "format", "trailing_comma"))),
-                             state, "format", "trailing_comma")
-            drop_comments = _bind(ui.switch(t(lang, "opt_drop_comments"),
-                                            value=bool(_opt(state, "format", "drop_comments"))),
-                                  state, "format", "drop_comments")
-
-        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        run_button = primary
-        if run_button is None:
-            run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-                "unelevated color=primary no-caps"
-            ).classes("w-full").mark("format-preview")
-    preview = _preview_area(lang, state, "format", refresh_body)
-
-    async def run_format() -> None:
-        opts = FormatOptions(
-            indent=indent.value or "4",
-            align_equals=bool(align_equals.value),
-            field_order=field_order.value or "standard",
-            sort_entries=sort.value or "none",
-            trailing_comma=bool(trailing.value),
-            drop_comments=bool(drop_comments.value),
-        )
-        await _run_preview_job(
-            run_button, preview, state, lang, "format",
-            lambda before: render_document(parse_bibtex(before), opts),
-            refresh_body, opts, t(lang, "tab_format"),
-        )
-
-    actions["run"] = run_format
-    if primary is None:
-        run_button.on_click(run_format)
-
-
-# -- clean ------------------------------------------------------------------
-def _panel_clean(state: dict, lang: str, _doc, refresh_body, primary, actions, _navigate) -> None:
-    common = ["abstract", "keywords", "url", "doi", "isbn", "issn", "month",
-              "note", "address", "editor", "publisher", "eprint", "volume", "number"]
-    with _workbench_settings(actions, lang, t(lang, "clean_note")):
-
-        ui.label(t(lang, "remove_fields")).classes("text-sm font-semibold mt-1")
-        remove_select = _bind(ui.select(
-            common, value=list(_opt(state, "clean", "remove") or []), multiple=True,
-            label=t(lang, "remove_fields"),
-        ).props("use-chips outlined dense").classes("w-full"),
-            state, "clean", "remove")
-        with ui.row().classes("gap-4 items-end flex-wrap"):
-            custom_remove = ui.input(t(lang, "custom_remove")).classes("w-72")
-            add_key = ui.input(t(lang, "add_key")).classes("w-44")
-            add_value = ui.input(t(lang, "add_value")).classes("w-72")
-            overwrite = ui.switch(t(lang, "overwrite"))
-            for key, widget in (("custom_remove", custom_remove), ("add_key", add_key),
-                                ("add_value", add_value), ("overwrite", overwrite)):
-                _draft(widget, state, "clean_" + key, False if key == "overwrite" else "")
-        incomplete = ui.label(t(lang, "incomplete_field")).classes("hx-tab-note text-amber-800")
-        incomplete.set_visibility(False)
-        with ui.row().classes("gap-6 flex-wrap mt-1"):
-            drop_empty = _bind(ui.switch(t(lang, "drop_empty"),
-                                         value=bool(_opt(state, "clean", "drop_empty"))),
-                               state, "clean", "drop_empty")
-            drop_others = _bind(ui.switch(t(lang, "drop_others"),
-                                          value=bool(_opt(state, "clean", "drop_others"))),
-                                state, "clean", "drop_others")
-            months = _bind(ui.switch(t(lang, "months"),
-                                     value=bool(_opt(state, "clean", "months"))),
-                           state, "clean", "months")
-            title_period = _bind(ui.switch(t(lang, "title_period"),
-                                           value=bool(_opt(state, "clean", "title_period"))),
-                                 state, "clean", "title_period")
-            dedupe = _bind(ui.switch(t(lang, "dedupe"),
-                                     value=bool(_opt(state, "clean", "dedupe"))),
-                           state, "clean", "dedupe")
-            keep_last = _bind(ui.switch(t(lang, "keep_last"),
-                                        value=bool(_opt(state, "clean", "keep_last"))),
-                              state, "clean", "keep_last")
-
-        ui.label(t(lang, "advanced")).classes("text-sm font-semibold mt-2")
-        with ui.row().classes("gap-6 flex-wrap"):
-            doi = _bind(ui.switch(t(lang, "opt_doi"),
-                                  value=bool(_opt(state, "clean", "doi"))),
-                        state, "clean", "doi")
-            pages = _bind(ui.switch(t(lang, "opt_pages"),
-                                    value=bool(_opt(state, "clean", "pages"))),
-                          state, "clean", "pages")
-            clean_urls = _bind(ui.switch(t(lang, "opt_clean_urls"),
-                                         value=bool(_opt(state, "clean", "clean_urls"))),
-                               state, "clean", "clean_urls")
-            dedupe_title = _bind(ui.switch(t(lang, "opt_dedupe_title"),
-                                           value=bool(_opt(state, "clean", "dedupe_title"))),
-                                 state, "clean", "dedupe_title")
-
-        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        run_button = primary
-        if run_button is None:
-            run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-                "unelevated color=primary no-caps"
-            ).classes("w-full").mark("clean-preview")
-    preview = _preview_area(lang, state, "clean", refresh_body)
-
-    def compute(before: str, values: dict) -> str:
-        work = parse_bibtex(before)
-        notes = []
-        names = list(values["remove_select"] or [])
-        if values["custom_remove"]:
-            names += [n.strip() for n in re.split(r"[,\s]+", values["custom_remove"]) if n.strip()]
-        if names:
-            notes.extend(cleaner.remove_fields(work, names))
-        if values["add_key"] and values["add_value"]:
-            notes.extend(cleaner.add_fields(
-                work, {values["add_key"].strip(): values["add_value"]}, overwrite=bool(values["overwrite"]),
-            ))
-        if values["drop_empty"]:
-            notes.extend(cleaner.drop_empty_fields(work))
-        if values["drop_others"]:
-            notes.extend(cleaner.drop_others(work))
-        if values["months"]:
-            notes.extend(cleaner.normalize_months(work))
-        if values["title_period"]:
-            notes.extend(cleaner.strip_title_periods(work))
-        if values["doi"]:
-            notes.extend(cleaner.normalize_dois(work))
-        if values["pages"]:
-            notes.extend(cleaner.unify_page_ranges(work))
-        if values["clean_urls"]:
-            notes.extend(cleaner.strip_url_tracking(work))
-        if values["dedupe"]:
-            notes.extend(cleaner.dedupe_entries(work, keep="last" if values["keep_last"] else "first"))
-        if values["dedupe_title"]:
-            notes.extend(cleaner.dedupe_by_title(work, keep="last" if values["keep_last"] else "first"))
-        return render_document(work, FormatOptions()) if notes else before
-
-    async def run_clean() -> None:
-        values = {key: widget.value for key, widget in {
-            "remove_select": remove_select, "custom_remove": custom_remove,
-            "add_key": add_key, "add_value": add_value, "overwrite": overwrite,
-            "drop_empty": drop_empty, "drop_others": drop_others, "months": months,
-            "title_period": title_period, "doi": doi, "pages": pages,
-            "clean_urls": clean_urls, "dedupe": dedupe, "keep_last": keep_last,
-            "dedupe_title": dedupe_title,
-        }.items()}
-        missing_pair = bool((values["add_key"] or "").strip()) != bool(values["add_value"])
-        incomplete.set_visibility(missing_pair)
-        if missing_pair:
-            return
-        await _run_preview_job(
-            run_button, preview, state, lang, "clean",
-            lambda before: compute(before, values), refresh_body,
-            FormatOptions(), t(lang, "tab_clean"),
-        )
-
-    actions["run"] = run_clean
-    if primary is None:
-        run_button.on_click(run_clean)
-
-
-# -- normalize --------------------------------------------------------------
-def _panel_normalize(state: dict, lang: str, _doc, refresh_body, primary, actions, _navigate) -> None:
-    with _workbench_settings(actions, lang, t(lang, "normalize_note")):
-
-        with ui.element("div").classes("hx-optbar w-full items-start"):
-            with ui.column().classes("gap-1"):
-                venue_style = _bind(ui.select(
-                    {"abbr": t(lang, "style_abbr_short"),
-                     "full": t(lang, "style_full_short"),
-                     "family": t(lang, "style_family_short"),
-                     "keep": t(lang, "style_keep_short")},
-                    value=_opt(state, "normalize", "venue_style") or "abbr", label=t(lang, "venue_style"),
-                ).mark("normalize-venue-style"),
-                    state, "normalize", "venue_style")
-                example = ui.label("").classes("hx-style-ex")
-
-                def update_example() -> None:
-                    style = venue_style.value or "abbr"
-                    if style == "keep":
-                        example.set_text(t(lang, "style_example_keep"))
-                    else:
-                        venue = get_venue("EMNLP")
-                        example.set_text(t(lang, "style_example").format(
-                            render_venue(venue, style=style)
-                            if venue else "…"
-                        ))
-
-                update_example()
-                venue_style.on_value_change(lambda _: update_example())
-
-            with ui.column().classes("gap-1"):
-                arxiv_style = _bind(ui.select(
-                    {"journal": t(lang, "arxiv_journal_short"),
-                     "misc": t(lang, "arxiv_misc_short"),
-                     "keep": t(lang, "style_keep_short")},
-                    value=_opt(state, "normalize", "arxiv_style") or "journal", label=t(lang, "arxiv_style"),
-                ).mark("normalize-arxiv-style"),
-                    state, "normalize", "arxiv_style")
-            with ui.column().classes("gap-2"):
-                ui.label(t(lang, "normalize_fixes")).classes("hx-optlabel")
-                fix_types = _bind(ui.switch(t(lang, "fix_types"),
-                                            value=bool(_opt(state, "normalize", "fix_types"))),
-                                  state, "normalize", "fix_types")
-                drop_volume = _bind(ui.switch(t(lang, "drop_arxiv_volume"),
-                                              value=bool(_opt(state, "normalize", "drop_arxiv_volume"))),
-                                    state, "normalize", "drop_arxiv_volume")
-                add_url = _bind(ui.switch(t(lang, "add_arxiv_url"),
-                                          value=bool(_opt(state, "normalize", "add_arxiv_url"))),
-                                state, "normalize", "add_arxiv_url")
-
-        ui.label(t(lang, "preview_hint")).classes("hx-tab-note")
-        run_button = primary
-        if run_button is None:
-            run_button = ui.button(t(lang, "preview_btn"), icon="preview").props(
-                "unelevated color=primary no-caps"
-            ).classes("w-full").mark("normalize-preview")
-    preview = _preview_area(lang, state, "normalize", refresh_body)
-
-    async def run_normalize() -> None:
-        options = NormalizeOptions(
-            venue_style=venue_style.value or "abbr",
-            arxiv_style=arxiv_style.value or "journal",
-            fix_entry_types=bool(fix_types.value),
-            drop_arxiv_volume=bool(drop_volume.value),
-            add_arxiv_url=bool(add_url.value),
-        )
-
-        def compute(before: str) -> str:
-            work = parse_bibtex(before)
-            normalize_document(work, options)
-            return render_document(work, FormatOptions())
-
-        await _run_preview_job(run_button, preview, state, lang, "normalize",
-                               compute, refresh_body, FormatOptions(),
-                               t(lang, "tab_normalize"))
-
-    actions["run"] = run_normalize
-    if primary is None:
-        run_button.on_click(run_normalize)
-
-
-# -- check ------------------------------------------------------------------
-def _panel_check(state: dict, lang: str, doc, refresh_body, run_button, actions, navigate) -> None:
-    controls = {}
-    with _workbench_settings(actions, lang, t(lang, "check_note")):
-        for key in DEFAULT_SETTINGS["check"]:
-            _bind(ui.switch(
-                t(lang, "check_opt_" + key), value=bool(_opt(state, "check", key)),
-            ).mark("check-option-" + key), state, "check", key)
-        ui.label(t(lang, "check_always")).classes("hx-tab-note")
-
-    _panel_head("rule", t(lang, "check_results"), t(lang, "check_results_note"))
-    status = ui.label("").classes("hx-tab-note").props("role=status").mark("check-status")
-    result_area = ui.column().classes("w-full gap-3")
-
-    def update_status() -> None:
-        if status.is_deleted:
-            return
-        report = state["check_report"]
-        running = state["check_job"] is not None
-        _busy(run_button, running)
-        stale = report is not None and state["check_config"] != _preview_config(state, "check")
-        if running:
-            text = t(lang, "check_running")
-        elif stale:
-            text = t(lang, "check_stale")
-        elif report is None:
-            text = t(lang, "check_empty")
-        else:
-            text = t(lang, "check_summary").format(entries=len(doc.entries), issues=len(report.issues))
-        status.set_text(text)
-        status.style("color:#b45309" if stale else "color:var(--hx-muted)")
-        button = controls.get("download")
-        if button is not None and not button.is_deleted:
-            button.set_enabled(not stale and not running)
-
-    def render_report(report) -> None:
-        result_area.clear()
-        with result_area:
-            with ui.element("div").classes("hx-check-metrics w-full"):
-                for severity in ("error", "warning", "info"):
-                    color = SEVERITY_COLOR[severity]
-                    ui.html(
-                        f'<div class="hx-check-metric" style="--metric-color:{color}">'
-                        f'<span class="material-icons" aria-hidden="true">{SEVERITY_ICON[severity]}</span>'
-                        f'<strong>{report.count(severity)}</strong>'
-                        f'<span>{_esc(t(lang, "sev_" + severity))}</span></div>'
-                    ).classes("w-full").tooltip(t(lang, "sev_" + severity + "_hint"))
-
-            def download_json() -> None:
-                if state["check_report"] is not report or state["check_config"] != _preview_config(state, "check"):
-                    ui.notify(t(lang, "check_stale"), type="warning")
-                    return
-                payload = {
-                    "tool": "hx-bib", "options": state["check_config"],
-                    "issues": [
-                        {"severity": i.severity, "key": i.key, "code": i.code,
-                         "field": i.field_name, "line": i.line, "message": i.message}
-                        for i in report.sorted()
-                    ],
-                }
-                ui.download(json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"),
-                            f"{Path(state['name']).stem or 'bibliography'}.check.json")
-
-            with ui.row().classes("hx-preview-actions w-full items-center gap-2"):
-                ui.label(t(lang, "check_readonly")).classes("hx-tab-note")
-                ui.space()
-                controls["download"] = ui.button(t(lang, "download_json"), icon="download",
-                                                  on_click=download_json).props(
-                    "outline no-caps"
-                ).mark("check-download")
-            with ui.expansion(t(lang, "workbench_issues"), icon="list",
-                              value=state["drafts"].get("check_details_open", False)).classes(
-                "hx-workbench-disclosure w-full"
-            ).mark("check-details") as details:
-                details.on_value_change(lambda e: state["drafts"].update(check_details_open=e.value))
-                labels = {"ALL": f'{t(lang, "check_all")} {len(report.issues)}'}
-                labels.update({severity: f'{t(lang, "sev_" + severity)} {report.count(severity)}'
-                               for severity in ("error", "warning", "info")})
-                filters = ui.toggle(labels, value=state["check_filter"]).props(
-                    "dense unelevated no-caps toggle-color=white toggle-text-color=primary"
-                ).mark("check-filter")
-                ui.label(t(lang, "check_expand_hint")).classes("hx-tab-note")
-                issues_area = ui.column().classes("hx-check-issues w-full").props(
-                    'data-hx-scroll="check-issues"'
-                )
-
-                def show_issues() -> None:
-                    issues_area.clear()
-                    with issues_area:
-                        ui.html(check_html(report, lang, filters.value or "ALL")).classes("w-full")
-
-                def pick(e) -> None:
-                    state["check_filter"] = e.value or "ALL"
-                    show_issues()
-
-                filters.on_value_change(pick)
-                show_issues()
-
-                with ui.row().classes("w-full gap-2"):
-                    for key in ("clean", "normalize"):
-                        ui.button(t(lang, "check_goto_" + key), on_click=lambda k=key: navigate(
-                            k, configure=True,
-                        )).props("flat color=primary no-caps").mark("check-goto-" + key)
-        update_status()
-
-    state.setdefault("preview_controls", {})["check"] = update_status
-    if state["check_report"] is not None:
-        render_report(state["check_report"])
-    update_status()
-
-    async def run_check() -> None:
-        before, revision = state["text"], state["revision"]
-        config = _preview_config(state, "check")
-        options = ValidateOptions(**config)
-        token = object()
-        state["check_job"] = token
-        _busy(run_button, True)
-        update_status()
-        try:
-            report = await asyncio.to_thread(lambda: validate_document(parse_bibtex(before), options))
-            if (preview_is_current(state, revision, before) and state["check_job"] is token
-                    and config == _preview_config(state, "check")):
-                state.update(check_report=report, check_config=config, check_job=None)
-                if not result_area.is_deleted:
-                    render_report(report)
-                elif state["mode"] == "tools" and state["tab"] == "check":
-                    refresh_body.refresh()
-        except Exception as exc:
-            if preview_is_current(state, revision, before):
-                ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
-        finally:
-            if state["check_job"] is token:
-                state["check_job"] = None
-                if status.is_deleted and state["mode"] == "tools" and state["tab"] == "check":
-                    refresh_body.refresh()
-            update_status()
-
-    actions["run"] = run_check
-
-# -- verify -----------------------------------------------------------------
-def _panel_verify(state: dict, lang: str, doc, _refresh_body, run_button, actions, _navigate) -> None:
-    with _workbench_settings(actions, lang, t(lang, "verify_note")):
-        ui.label(t(lang, "workbench_online_hint")).classes("hx-tab-note")
-        ui.label(t(lang, "verify_scope_hint").format(n=len(doc.entries))).classes("hx-tab-note")
-        only = _draft(ui.input(t(lang, "only_keys")).props("outlined dense").mark("verify-keys"),
-                      state, "verify_keys")
-        ui.label(t(lang, "verify_network")).classes("hx-optlabel")
-        ui.label(t(lang, "verify_network_hint")).classes("hx-tab-note")
-        with ui.element("div").classes("hx-verify-controls w-full"):
-            delay = _bind(ui.number(
-                t(lang, "delay"), value=float(_opt(state, "verify", "delay")), min=0, step=0.1,
-            ).props("outlined dense"), state, "verify", "delay")
-            workers = _bind(ui.number(
-                t(lang, "workers"), value=int(_opt(state, "verify", "workers")),
-                min=1, max=8, step=1, precision=0,
-            ).props("outlined dense").tooltip(t(lang, "workers_hint")), state, "verify", "workers")
-        use_cache = _bind(ui.switch(t(lang, "use_cache"), value=bool(_opt(state, "verify", "use_cache"))),
-                          state, "verify", "use_cache")
-
-    _panel_head("rule", t(lang, "verify_results"), t(lang, "verify_results_note"))
-    status = ui.label("").classes("hx-tab-note hx-verify-status").props(
-        'role=status aria-live=polite'
-    ).mark("verify-status")
-    progress_bar = ui.linear_progress(value=0, show_value=False).classes("w-full").props(
-        f'aria-label="{t(lang, "steps_verify_run")}"'
-    )
-    with ui.element("div").classes("hx-check-metrics w-full") as metrics:
-        summaries = [
-            ("verify_attention", "warning_amber", "WARN"),
-            ("verdict_INFO", "help_outline", "INFO"),
-            ("verdict_OK", "check_circle_outline", "OK"),
-        ]
-        counters = []
-        for label, icon, verdict in summaries:
-            with ui.element("div").classes("hx-check-metric").style(
-                f"--metric-color:{VERDICT_COLOR[verdict]}"
-            ):
-                ui.icon(icon).props("aria-hidden=true")
-                counters.append(ui.label("—").classes("hx-metric-number"))
-                ui.label(t(lang, label)).classes("hx-metric-label")
-    publication_report = ui.html("").classes("w-full").mark("arxiv-report")
-    with ui.row().classes("hx-preview-actions w-full items-center gap-2"):
-        ui.label(t(lang, "verify_readonly")).classes("hx-tab-note")
-        ui.space()
-        download_button = ui.button(t(lang, "download_report"), icon="download").props(
-            "outline color=primary no-caps"
-        ).mark("verify-download")
-
-    with ui.row().classes("w-full items-center gap-2"):
-        pause_button = ui.button(t(lang, "pause"), icon="pause").props(
-            "outline color=primary no-caps"
-        ).mark("verify-pause")
-        stop_button = ui.button(t(lang, "stop"), icon="stop").props(
-            "outline color=red-7 no-caps"
-        ).mark("verify-stop")
-    with ui.expansion(t(lang, "workbench_issues"), icon="list").classes(
-        "hx-workbench-disclosure w-full"
-    ).mark("verify-details") as details_expansion:
-        filters = ui.select({"ALL": t(lang, "check_all")}, value="ALL", label=t(lang, "verify_filter")).props(
-            "outlined dense options-dense"
-        ).classes("w-full").mark("verify-filter")
-        with ui.element("div").classes("hx-check-issues hx-verify-list w-full").props(
-            'data-hx-scroll="verify-issues"'
-        ):
-            result_area = ui.html("").classes("w-full").mark("verify-list")
-
-    rendered = None
-    last_status = None
-
-    def pick(e) -> None:
-        results = state["verify_results"]
-        if results and e.value in filters.options and e.value != state["verify_filter"]:
-            state["verify_filter"] = e.value
-            result_area.set_content(verify_html(results, e.value, lang))
-
-    def sync_view() -> None:
-        nonlocal rendered, last_status
-        if status.is_deleted:
-            return
-        progress = state["progress"]
-        control = state["run_control"]
-        running = control is not None
-        stopping = running and control.cancelled.is_set()
-        paused = running and progress["paused"]
-        results = state["verify_results"]
-        outcome = progress.get("outcome")
-        done, total = progress["done"], progress["total"]
-        snapshot = (running, stopping, paused, done, total, outcome, id(results))
-        if snapshot == last_status:
-            return
-        last_status = snapshot
-        actions["update_actions"]()
-        pause_button.set_enabled(running and not stopping)
-        pause_button.set_text(t(lang, "resume" if paused else "pause"))
-        pause_button.set_icon("play_arrow" if paused else "pause")
-        stop_button.set_enabled(running and not stopping)
-        details_expansion.set_enabled(bool(results))
-        download_button.set_enabled(bool(results))
-        for widget in (only, delay, workers, use_cache):
-            widget.set_enabled(not running)
-        progress_bar.set_value(done / total if total else 0)
-        if running:
-            phase = "verify_stopping" if stopping else "state_paused" if paused else "state_running"
-            status.set_text(f"{done}/{total} · {t(lang, phase)}")
-        elif outcome == "failed":
-            status.set_text(t(lang, "verify_failed"))
-        elif outcome == "stopped":
-            status.set_text(t(lang, "stopped_partial").format(n=len(results or [])))
-        elif results is not None:
-            status.set_text(t(lang, "verify_done").format(n=len(results)))
-        else:
-            status.set_text(t(lang, "verify_ready").format(n=len(doc.entries)))
-
-        report_view = (id(results), running, outcome)
-        if report_view == rendered:
-            return
-        rendered = report_view
-        counts = Counter(result.verdict for result in results or [])
-        totals = (sum(counts[key] for key in ("FAIL", "WARN", "MINOR")), counts["INFO"], counts["OK"])
-        for label, count in zip(counters, totals):
-            label.set_text(str(count) if results is not None else "—")
-        options = {"ALL": t(lang, "check_all")}
-        arxiv_scope = progress.get("scope") == "arxiv"
-        metrics.set_visibility(not arxiv_scope)
-        publication_report.set_visibility(arxiv_scope and bool(results))
-        if arxiv_scope and results:
-            publication_report.set_content(
-                f'<strong>{_esc(t(lang, "arxiv_status_title"))}</strong>'
-                f'<div class="hx-tab-note">{_esc(t(lang, "arxiv_status_note"))}</div>'
-                + "".join(_arxiv_publication_item(item, lang) for item in results)
-            )
-        if results:
-            options["ALL"] += f" · {len(results)}"
-            options.update({key: f'{t(lang, "verdict_" + key)} · {counts[key]}' for key in VERDICT_COLOR})
-        filters.set_options(options, value=state["verify_filter"])
-        filters.set_enabled(bool(results))
-        if results:
-            result_area.set_content(verify_html(results, state["verify_filter"], lang))
-        else:
-            message = "verify_pending" if running else "verify_empty"
-            if outcome == "stopped":
-                message = "verify_no_completed"
-            title = (f'<div class="hx-panel-title">{_esc(t(lang, "verify_empty_title"))}</div>'
-                     if not running and not outcome else "")
-            result_area.set_content(
-                '<div class="hx-empty hx-verify-empty">'
-                '<span class="material-icons" aria-hidden="true">travel_explore</span>'
-                f'{title}<div class="hx-tab-note">{_esc(t(lang, message))}</div></div>'
-            )
-
-    async def run_verify(scope: str = "all") -> None:
-        if state["run_control"] is not None:
-            return
-        before, revision = state["text"], state["revision"]
-        keys = set() if scope == "arxiv" else set((only.value or "").replace(",", " ").split())
-        entries = list(doc.entries)
-        if keys:
-            missing = keys - {entry.key for entry in entries}
-            if missing:
-                ui.notify(t(lang, "unknown_keys").format(keys=", ".join(sorted(missing))), type="warning")
-                return
-            entries = [entry for entry in entries if entry.key in keys]
-        if scope == "arxiv":
-            entries = [entry for entry in entries if extract_arxiv_id(entry)]
-        if not entries:
-            ui.notify(t(lang, "arxiv_no_entries" if scope == "arxiv" else "no_results"), type="warning")
-            return
-
-        n_workers = max(1, min(8, int(workers.value or 1)))
-        wait = max(0.0, float(delay.value if delay.value is not None else 0.8))
-        use_cached = bool(use_cache.value)
-        control = RunControl()
-        progress = {"done": 0, "total": len(entries), "key": "", "running": True, "paused": False, "scope": scope}
-        state.update(run_control=control, progress=progress, verify_results=None, verify_filter="ALL")
-        sync_view()
-
-        progress_lock = Lock()
-
-        def update_progress(done: int, total: int, citekey: str) -> None:
-            with progress_lock:
-                if done > progress["done"]:
-                    progress.update(done=done, total=total, key=citekey)
-
-        def work() -> list:
-            net = Net(delay=wait, use_cache=use_cached)
-            if not control.wait_if_paused():
-                return []
-            prefetch_arxiv(net, entries)
-            results = verify_entries(net, entries, progress=update_progress, workers=n_workers, control=control)
-            if not control.cancelled.is_set() and any(r.any_error and r.verdict != "OK" for r in results):
-                results = retry_failed(net, results, control=control)
-            return results
-
-        try:
-            results = await asyncio.to_thread(work)
-            outcome = "stopped" if control.cancelled.is_set() else "completed"
-        except Exception as exc:
-            results, outcome = None, "failed"
-            if state["run_control"] is control:
-                ui.notify(t(lang, "operation_failed").format(error=exc), type="negative")
-        finally:
-            if state["run_control"] is control:
-                progress.update(running=False, paused=False)
-                state["run_control"] = None
-        if not preview_is_current(state, revision, before) or state["progress"] is not progress:
-            return
-        progress.update(outcome=outcome, done=len(results) if results is not None else progress["done"])
-        state["verify_results"] = results
-        sync_view()
-
-    def toggle_pause() -> None:
-        control = state["run_control"]
-        if control is None or control.cancelled.is_set():
-            return
-        if control.paused.is_set():
-            control.resume()
-        else:
-            control.pause()
-        state["progress"]["paused"] = control.paused.is_set()
-        sync_view()
-
-    def stop_run() -> None:
-        control = state["run_control"]
-        if control is not None:
-            control.cancel()
-            state["progress"]["paused"] = False
-            sync_view()
-
-    def download_report() -> None:
-        results = state["verify_results"]
-        if results and state["run_control"] is None:
-            stem = Path(state["name"]).stem or "bibliography"
-            ui.download(
-                build_verify_html(results, state["name"] or "bibliography").encode("utf-8"),
-                f"{stem}.report.html",
-            )
-
-    filters.on_value_change(pick)
-    actions["run"] = run_verify
-    pause_button.on_click(toggle_pause)
-    stop_button.on_click(stop_run)
-    download_button.on_click(download_report)
-    sync_view()
-    ui.timer(0.25, sync_view)
 
 
 # -- venues -----------------------------------------------------------------
@@ -2553,59 +1811,17 @@ def _venue_card(venue, lang: str, used: int = 0) -> None:
                 ).tooltip(copy_label).mark(f"venue-{venue.abbr}-{style}")
 
 
-def _normalize_venue_preview(before: str, style: str) -> str:
-    work = parse_bibtex(before)
-    opts = NormalizeOptions(venue_style=style, arxiv_style="keep")
-    changed = False
-    for entry in work.entries:
-        if entry_venue_presets(entry) and normalize_entry(entry, opts):
-            changed = True
-    return render_document(work, FormatOptions()) if changed else before
-
-
-def _panel_venues(state: dict, lang: str, doc, refresh_body, _primary=None, actions=None, _navigate=None) -> None:
-    usage = Counter()
-    matched = 0
-    if doc is not None:
-        for entry in doc.entries:
-            presets = entry_venue_presets(entry)
-            matched += bool(presets)
-            usage.update(presets)
-
-    _panel_head("stadium", t(lang, "venues_catalog"), t(lang, "venues_catalog_note"))
-
-    if actions is not None:
-        with _workbench_settings(actions, lang, t(lang, "venues_norm_note").format(n=matched)):
-            _bind(ui.select(
-                {key: t(lang, "style_" + key + "_short") for key in _VENUE_STYLES},
-                value=_opt(state, "venues", "preset_style"), label=t(lang, "venue_style"),
-            ).mark("venue-norm-style"), state, "venues", "preset_style")
-            run_button = ui.button(t(lang, "venues_norm_btn"), icon="preview").props(
-                "unelevated color=primary no-caps"
-            ).mark("venue-normalize-preview").set_enabled(matched > 0)
-
-        with ui.expansion(t(lang, "venues_apply"), icon="auto_fix_high", value="venues" in state["previews"]).classes(
-            "hx-workbench-disclosure w-full"
-        ).mark("venue-apply") as show_preview:
-            preview = _preview_area(lang, state, "venues", refresh_body)
-
-        async def run_venue_normalize() -> None:
-            if matched:
-                show_preview.open()
-                style = _opt(state, "venues", "preset_style")
-                await _run_preview_job(
-                    run_button, preview, state, lang, "venues", lambda before: _normalize_venue_preview(before, style),
-                    refresh_body, FormatOptions(), t(lang, "venues_norm_label"),
-                )
-
-        run_button.on_click(run_venue_normalize)
-        actions["run"] = run_venue_normalize
+def _panel_venues(state: dict, lang: str, doc=None, *, compact: bool = False) -> None:
+    usage = Counter(preset for entry in doc.entries for preset in entry_venue_presets(entry)) if doc else Counter()
+    if not compact:
+        _panel_head("stadium", t(lang, "venues_catalog"), t(lang, "venues_catalog_note"))
 
     query = _draft(ui.input(t(lang, "search_venues"), placeholder=t(lang, "venues_search_hint"))
                    .classes("w-full").mark("venue-search"), state, "venue_query")
-    with ui.expansion(t(lang, "workbench_filters"), icon="filter_alt").classes(
-        "hx-workbench-disclosure w-full"
-    ).mark("venue-filters"):
+    filters = ui.column().classes("w-full gap-2") if compact else ui.expansion(
+        t(lang, "workbench_filters"), icon="filter_alt",
+    ).classes("hx-workbench-disclosure w-full").mark("venue-filters")
+    with filters:
         with ui.element("div").classes("hx-venue-filters w-full"):
             kind = _draft(ui.select(
                 {"ALL": t(lang, "venue_all_kinds"),
@@ -2641,8 +1857,10 @@ def _panel_venues(state: dict, lang: str, doc, refresh_body, _primary=None, acti
         with grid_area:
             if matches:
                 with ui.element("div").classes("hx-venue-grid w-full"):
-                    for venue in matches:
+                    for venue in matches[:8] if compact else matches:
                         _venue_card(venue, lang, usage[venue.abbr])
+                if compact and len(matches) > 8:
+                    ui.label(t(lang, "bib_venue_more")).classes("hx-tab-note")
             else:
                 ui.label(t(lang, "no_venues")).classes("hx-tab-note")
 

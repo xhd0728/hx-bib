@@ -5,7 +5,9 @@ import threading
 
 import pytest
 
+from hx_bib.core.parser import parse_bibtex
 from hx_bib.gui import app
+from hx_bib.gui.bib_workbench import apply_options
 from hx_bib.gui.workspace import (
     DEFAULT_SETTINGS,
     invalidate_results,
@@ -51,11 +53,11 @@ def test_document_change_cancels_paused_verification_and_clears_reports():
     state = loaded_state()
     control = state["run_control"] = RunControl()
     control.pause()
-    state.update(verify_results=["old"], check_report="old", previews={"format": "old"})
+    state.update(verify_results=["old"], check_report="old")
     push_stage(state, "edit", "updated")
     assert control.cancelled.is_set() and not control.paused.is_set()
     assert state["verify_results"] is None and state["check_report"] is None
-    assert state["previews"] == {} and not state["progress"]["running"]
+    assert not state["progress"]["running"]
 
 
 def test_undo_to_identical_text_still_invalidates_old_revision():
@@ -96,99 +98,77 @@ def test_upload_decoder_strips_bom_and_supports_legacy_bytes():
     assert app._read_file_bytes(b"caf\xe9") == "caf\xe9"
 
 
-def test_preview_job_discards_result_after_document_change(monkeypatch):
+def test_apply_runs_selected_tools_in_one_pass_and_validates_result():
+    settings = merge_settings(DEFAULT_SETTINGS, {
+        "enabled": {"clean": True, "normalize": True, "venues": True, "check": True},
+        "clean": {"remove": ["abstract"], "pages": True},
+        "format": {"indent": "2"},
+        "normalize": {"venue_style": "abbr"},
+        "venues": {"preset_style": "full"},
+    })
+    source = "@article{x, title={T}, journal={TBD}, year={2024}, author={Doe}, pages={1-3}, abstract={Text}}"
+    after, report = apply_options(source, settings, {})
+    entry = parse_bibtex(after).entries[0]
+    assert entry.get("journal") == "IEEE Transactions on Big Data"
+    assert entry.get("pages") == "1--3"
+    assert not entry.has("abstract") and "\n  author " in after
+    assert not report.issues
+
+
+def test_validation_only_can_report_malformed_input_without_editing_it():
+    source = "@article{first, title={Hello}}\n@article{unterminated, title={"
+    settings = merge_settings(DEFAULT_SETTINGS, {"enabled": {"format": False, "check": True}})
+    after, report = apply_options(source, settings, {})
+    assert after == source and any(issue.code == "parse" for issue in report.issues)
+    settings["enabled"]["format"] = True
+    with pytest.raises(ValueError, match="bib_parse_first"):
+        apply_options(source, settings, {})
+
+
+def test_apply_rejects_field_values_that_would_change_the_parsed_structure():
+    source = "@article{first, title={Hello}}"
+    settings = merge_settings(DEFAULT_SETTINGS, {"enabled": {"clean": True}})
+    with pytest.raises(ValueError, match="bib_result_invalid"):
+        apply_options(source, settings, {"clean_add_key": "note", "clean_add_value": "x}, extra={y"})
+
+
+def test_single_apply_has_one_history_step_and_preserves_arxiv_results(monkeypatch):
+    state = loaded_state()
+    state.update(arxiv_results=["evidence"], progress={"scope": "arxiv", "running": True}, run_control=RunControl())
+    monkeypatch.setattr(app, "apply_options", lambda source, settings, drafts: ("combined", None))
+    assert asyncio.run(app._apply_bib_options(state, "en"))
+    assert state["text"] == "combined" and state["diff_before"] == "original"
+    assert len(state["history"]) == 1 and state["arxiv_results"] == ["evidence"]
+    assert not state["run_control"].cancelled.is_set()
+    jump_stage(state, 0)
+    assert state["text"] == "original" and state["diff_before"] is None
+    jump_stage(state, 1)
+    assert state["diff_before"] == "original"
+    invalidate_results(state)
+    assert state["arxiv_results"] is None and state["run_control"] is None
+
+
+def test_pending_apply_does_not_write_into_replaced_document(monkeypatch):
     state = loaded_state()
     started, release = threading.Event(), threading.Event()
-    rendered = []
 
-    class Widget:
-        is_deleted = False
-
-        def props(self, *args, **kwargs):
-            pass
-
-    def compute(before):
+    def compute(source, settings, drafts):
         started.set()
         assert release.wait(5)
-        return before + " updated"
+        return "obsolete", None
 
-    monkeypatch.setattr(app, "_render_preview", lambda *a, **k: rendered.append(a))
+    monkeypatch.setattr(app, "apply_options", compute)
 
     async def scenario():
-        task = asyncio.create_task(app._run_preview_job(
-            Widget(), Widget(), state, "en", "format", compute, None, None, "format",
-        ))
+        task = asyncio.create_task(app._apply_bib_options(state, "en"))
         assert await asyncio.to_thread(started.wait, 5)
         invalidate_results(state)
+        state["text"] = "new file"
         release.set()
-        await task
+        assert not await task
 
     asyncio.run(scenario())
-    assert not rendered and not state["previews"]
-
-
-def test_newer_preview_job_wins_even_if_old_job_finishes_last(monkeypatch):
-    state = loaded_state()
-    started, release = threading.Event(), threading.Event()
-    rendered = []
-
-    class Widget:
-        is_deleted = False
-
-        def props(self, *args, **kwargs):
-            pass
-
-    def old_job(before):
-        started.set()
-        assert release.wait(5)
-        return "old result"
-
-    monkeypatch.setattr(app, "_render_preview", lambda *a, **k: rendered.append(a[4]))
-
-    async def scenario():
-        old = asyncio.create_task(app._run_preview_job(
-            Widget(), Widget(), state, "en", "format", old_job, None, None, "format",
-        ))
-        assert await asyncio.to_thread(started.wait, 5)
-        await app._run_preview_job(Widget(), Widget(), state, "en", "format",
-                                   lambda before: "new result", None, None, "format")
-        release.set()
-        await old
-
-    asyncio.run(scenario())
-    assert rendered == ["new result"]
-    assert state["previews"]["format"]["result_text"] == "new result"
-
-
-def test_preview_with_old_options_is_discarded_before_debounced_refresh(monkeypatch):
-    state = loaded_state()
-    started, release = threading.Event(), threading.Event()
-    rendered = []
-
-    class Widget:
-        is_deleted = False
-
-        def props(self, *args, **kwargs):
-            pass
-
-    def compute(before):
-        started.set()
-        assert release.wait(5)
-        return before + " updated"
-
-    monkeypatch.setattr(app, "_render_preview", lambda *args, **kwargs: rendered.append(args))
-
-    async def scenario():
-        task = asyncio.create_task(app._run_preview_job(
-            Widget(), Widget(), state, "en", "format", compute, None, None, "format",
-        ))
-        assert await asyncio.to_thread(started.wait, 5)
-        app._set_setting(state, "format", "indent", "2")
-        release.set()
-        await task
-
-    asyncio.run(scenario())
-    assert not rendered and not state["previews"]
+    assert state["text"] == "new file" and not state["history"]
 
 
 @pytest.mark.parametrize("copied", [True, False])

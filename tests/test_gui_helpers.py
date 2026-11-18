@@ -1,18 +1,17 @@
-"""GUI rendering helper tests: itemized list, per-entry diff, table comparison."""
+"""GUI rendering helpers and comparisons for BibTeX and LaTeX."""
 
 from hx_bib.core.parser import parse_bibtex
 from hx_bib.core.validator import Issue, ValidationReport, validate_text
 from hx_bib.gui.app import (
     _comparison_code,
-    _entry_comparisons,
-    _normalize_venue_preview,
-    changes_html,
+    _diff_rows_html,
     check_html,
-    entry_diff_html,
     table_compare_html,
     table_result_html,
 )
+from hx_bib.gui.bib_workbench import apply_options, compare_entries, comparison_rows
 from hx_bib.gui.diagnostics import issue_text
+from hx_bib.gui.workspace import DEFAULT_SETTINGS, merge_settings
 
 TABLE_BEFORE = (
     "\\begin{tabular}{cc}\n"
@@ -45,13 +44,6 @@ AFTER = """@article{a,
 """
 
 
-def test_changes_html_changed_mode_filters_unchanged():
-    changed = changes_html(BEFORE, AFTER, "changed", "en")
-    everything = changes_html(BEFORE, AFTER, "all", "en")
-    assert ">a<" in changed and ">b<" not in changed
-    assert ">a<" in everything and ">b<" in everything
-
-
 def test_comparison_highlights_changes_and_escapes_literal_code():
     before, after = _comparison_code("unchanged\n<old>", "unchanged\n<new>")
     assert 'hx-code-removed" data-line="2">&lt;old&gt;' in before
@@ -64,76 +56,64 @@ def test_entry_copies_preserve_inline_blocks_and_duplicate_occurrences():
     removed = "@article{same,title={First}}"
     other = "@misc{other,title={Another}}"
     before = f"{removed} {retained}\r\n{other}"
-    pairs = _entry_comparisons(before, f"{retained}\n{other}")
-    assert [(old, new) for _, old, new in pairs] == [
+    pairs = compare_entries(before, f"{retained}\n{other}")
+    assert [(pair.left, pair.right) for pair in pairs] == [
         (removed, None), (retained, retained), (other, other),
     ]
 
 
-def test_venue_preview_only_normalizes_recognized_entries():
-    before = (
-        "@article{known, journal={TBD}}\n"
-        "@article{unknown, booktitle={Independent Workshop}}"
-    )
-    known, unknown = parse_bibtex(_normalize_venue_preview(before, "full")).entries
+def test_venue_preset_only_changes_recognized_entries():
+    unchanged = "@article{unknown, booktitle={Independent Workshop}}"
+    before = "@article{known, journal={TBD}}\n" + unchanged
+    settings = merge_settings(DEFAULT_SETTINGS, {
+        "enabled": {"format": False, "venues": True},
+        "venues": {"preset_style": "full"},
+    })
+    after, _ = apply_options(before, settings, {})
+    known, unknown = parse_bibtex(after).entries
     assert known.get("journal") == "IEEE Transactions on Big Data"
-    assert unknown.type == "article"
-    assert unknown.get("booktitle") == "Independent Workshop"
-    assert _normalize_venue_preview(before, "abbr") == before
+    assert unknown.type == "article" and after.endswith(unchanged)
+    settings["venues"]["preset_style"] = "abbr"
+    assert apply_options(before, settings, {})[0] == before
 
 
-def test_changes_html_badges():
-    html = changes_html(BEFORE, AFTER, "changed", "en")
-    assert "hx-field-mod" in html       # modified badge
-    assert "~title" in html             # sign + field name
+def test_diff_compares_entries_and_counts_formatting_only_changes():
+    comparisons = compare_entries(BEFORE, AFTER)
+    assert [(pair.after.key, pair.kind) for pair in comparisons] == [
+        ("a", "modified"), ("b", "unchanged"),
+    ]
+    assert [pair.kind for pair in compare_entries(BEFORE, BEFORE)] == ["unchanged", "unchanged"]
+    formatting = BEFORE.replace("  title = {Old", "    title = {Old")
+    change = compare_entries(BEFORE, formatting)[0]
+    assert change.kind == "modified"
+    assert "replace" in [row.kind for row in comparison_rows(change, full=False)]
 
 
-def test_changes_html_no_changes():
-    html = changes_html(BEFORE, BEFORE, "changed", "en")
-    assert "No changes" in html
+def test_diff_tracks_order_without_marking_a_survivor_moved_by_deletion():
+    first, second = "@article{a,title={A}}", "@article{b,title={B}}"
+    before = first + "\n" + second
+    assert all(pair.moved and pair.kind == "modified" for pair in compare_entries(before, second + "\n" + first))
+    assert [pair.kind for pair in compare_entries(before, second)] == ["removed", "unchanged"]
 
 
-def test_entry_diff_groups_per_entry():
-    html = entry_diff_html(BEFORE, AFTER, "all", "en")
-    assert 'class="hx-ediff hx-ediff-modified"' in html
-    assert 'class="hx-ediff hx-ediff-unchanged"' in html
-    assert html.count('class="hx-ediff-key"') == 2   # a and b, one block each
-    assert 'class="replace"' in html
-    assert 'class="old' in html and 'class="new' in html
+def test_diff_added_removed_and_escaped_code():
+    before, after = "@article{a,title={<script>}}", "@article{b,title={<b>}}"
+    removed, added = compare_entries(before, after)
+    assert removed.kind == "removed" and added.kind == "added"
+    html = _diff_rows_html(comparison_rows(removed, full=False) + comparison_rows(added, full=False))
+    assert 'class="delete"' in html and 'class="insert"' in html
+    assert "&lt;script&gt;" in html and "&lt;b&gt;" in html
 
 
-def test_entry_diff_changed_mode_only_changed_entries():
-    changed = entry_diff_html(BEFORE, AFTER, "changed", "en")
-    assert "hx-ediff-modified" in changed
-    assert "hx-ediff-unchanged" not in changed
-    assert '>b</span>' not in changed
-
-
-def test_entry_diff_added_and_removed_entries():
-    added = entry_diff_html(
-        "@article{a, title={A}}",
-        "@article{a, title={A}}\n@article{b, title={B}}",
-        "changed", "en",
-    )
-    assert 'class="hx-ediff hx-ediff-added"' in added
-    assert 'class="insert"' in added
-    removed = entry_diff_html(
-        "@article{a, title={A}}\n@article{b, title={B}}",
-        "@article{a, title={A}}",
-        "changed", "en",
-    )
-    assert 'class="hx-ediff hx-ediff-removed"' in removed
-    assert 'class="delete"' in removed
-
-
-def test_entry_diff_escapes_markup():
-    html = entry_diff_html(
-        "@article{a, title = {<b>bold</b>}}",
-        "@article{a, title = {plain}}",
-        "all", "en",
-    )
-    assert "<b>bold</b>" not in html
-    assert "&lt;b&gt;bold&lt;/b&gt;" in html
+def test_diff_only_trims_unchanged_lines_but_full_keeps_them():
+    before = "@article{k,\n  title={A},\n  author={A},\n  journal={J},\n  year={2020},\n  pages={3--8}\n}"
+    after = before.replace("2020", "2021")
+    change = compare_entries(before, after)[0]
+    compact = comparison_rows(change, full=False)
+    full = comparison_rows(change, full=True)
+    assert any(row.kind == "replace" and row.right_no == 5 for row in compact)
+    assert not any(row.left and "title" in row.left for row in compact)
+    assert len(full) == 7 and full[1].left_no == 2
 
 
 def test_table_compare_per_table_blocks():
@@ -178,22 +158,6 @@ def test_table_result_html_shows_output():
     html = table_result_html("a & b \\\\", "en")
     assert "Formatted result" in html
     assert "<pre" in html and "a &amp; b" in html
-
-
-def test_entry_diff_dedupe_keeps_last_occurrence():
-    before = "@article{same,title={First}}\n@article{same,title={Last}}"
-    after = "@article{same,title={Last}}"
-    html = entry_diff_html(before, after, "changed", "en")
-    assert html.count('class="hx-ediff hx-ediff-removed"') == 1
-    assert "First" in html and "Last" not in html
-    assert "hx-ediff-modified" not in html
-
-
-def test_entry_diff_duplicate_addition_is_visible():
-    html = entry_diff_html("@article{same,title={A}}",
-                           "@article{same,title={A}}\n@article{same,title={B}}", "changed", "en")
-    assert html.count('class="hx-ediff hx-ediff-added"') == 1
-    assert "title={B}" in html
 
 
 def test_check_html_uses_chinese_messages_and_actionable_hints():
