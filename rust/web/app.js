@@ -12,6 +12,8 @@ const state = {
   language: "zh",
   mode: "bib",
   name: "",
+  entryCount: 0,
+  originalCount: 0,
   text: "",
   original: "",
   before: "",
@@ -367,6 +369,8 @@ async function loadBib(text, name) {
   $("progress").textContent = "";
   Object.assign(state, {
     name,
+    entryCount: parsed.entries.length,
+    originalCount: parsed.entries.length,
     text,
     original: text,
     before: text,
@@ -382,9 +386,10 @@ async function loadBib(text, name) {
 function renderResults() {
   $("filename").textContent =
     state.mode === "bib" ? state.name || "hx-bib" : "LaTeX";
+  $("filename").title = $("filename").textContent;
   $("entries").textContent =
     state.mode === "bib" && state.name
-      ? state.comparison.length + " " + t("entries")
+      ? state.entryCount + " " + t("entries")
       : "";
   $("stage").textContent =
     state.mode === "bib"
@@ -680,12 +685,19 @@ action($("apply"), async () => {
       settings: state.settings,
       drafts: state.drafts,
     });
-    if (generation !== state.generation) return;
+    if (generation !== state.generation || before !== state.text) return;
     if (result.text !== before) {
+      const parsed = await process({ op: "parse", text: result.text });
+      if (generation !== state.generation || before !== state.text) return;
       state.history.splice(state.pointer);
-      state.history.push({ before, after: result.text });
+      state.history.push({
+        before,
+        after: result.text,
+        afterCount: parsed.entries.length,
+      });
       state.pointer++;
       state.text = result.text;
+      state.entryCount = parsed.entries.length;
       if (state.running && state.lastScope === "all")
         await invoke("control_run", { action: "stop" });
       state.reports = [];
@@ -703,6 +715,9 @@ async function jump(pointer) {
     await invoke("control_run", { action: "stop" });
   state.pointer = pointer;
   state.text = pointer ? state.history[pointer - 1].after : state.original;
+  state.entryCount = pointer
+    ? state.history[pointer - 1].afterCount
+    : state.originalCount;
   state.before = pointer ? state.history[pointer - 1].before : state.original;
   state.comparison = await process({
     op: "diff",
